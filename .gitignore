@@ -1,0 +1,22 @@
+# Build artifacts
+/bin/
+/dist/
+/build/
+
+# Go modules & tooling
+/vendor/
+*.log
+
+# OS files
+.DS_Store
+
+# Editor / IDE
+.idea/
+.vscode/
+
+# Test outputs
+coverage.out
+
+# Cursor / plan metadata (documented here; lives outside this repo)
+/Users/ashczar/.cursor/plans/go-terminal-coding-agent_5caf8bde.plan.md
+
