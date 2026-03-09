@@ -5,11 +5,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"koba/internal/config"
 	"koba/internal/contextx"
+	"koba/internal/errors"
 	"koba/internal/provider"
 	"koba/internal/term"
 )
@@ -24,9 +26,9 @@ func RunCode(
 	args []string,
 	modelOverride string,
 ) error {
-	client, err := provider.NewAnthropicClient(cfg.AnthropicAPIKey, chooseModel(cfg, modelOverride))
+	client, err := newProviderClient(cfg, modelOverride)
 	if err != nil {
-		fmt.Fprintln(errOut, "provider error:", err)
+		fmt.Fprintln(errOut, errors.FriendlyProvider(err))
 		return err
 	}
 
@@ -61,11 +63,17 @@ func RunCode(
 			ctxLines = append(ctxLines, "go.mod (truncated):", "```go", content, "```")
 		}
 	}
+	if hist := contextx.RecentShellHistory(15); hist != "" {
+		ctxLines = append(ctxLines, hist)
+	}
 
-	systemPrompt := `You are Koba, a senior software engineer helping with coding tasks.
+	cwd, _ := os.Getwd()
+	systemPrompt := fmt.Sprintf(`You are Koba, a senior software engineer helping with coding tasks.
+Working directory: %s
+
 You are running inside the user's terminal and can see their git diff and key project files.
 Use the provided context to understand the codebase and give precise, implementation-level answers.
-Prefer concrete suggestions, diffs, or code snippets over high-level ideas.`
+Prefer concrete suggestions, diffs, or code snippets over high-level ideas.`, cwd)
 
 	var messages []provider.Message
 	messages = append(messages, provider.Message{
@@ -85,11 +93,13 @@ Prefer concrete suggestions, diffs, or code snippets over high-level ideas.`
 		Content: request,
 	})
 
+	stopSpinner := term.StartSpinner(errOut, "Koba is thinking...")
 	streamObj, err := client.Chat(ctx, messages, provider.ChatOptions{
 		Model:       modelOverride,
 		Temperature: cfg.Temperature,
 		Stream:      true,
 	})
+	stopSpinner()
 	if err != nil {
 		return err
 	}

@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"koba/internal/config"
+	"koba/internal/errors"
 	"koba/internal/provider"
 	"koba/internal/term"
 )
@@ -22,16 +24,25 @@ func RunChat(
 	systemPrompt string,
 	stream bool,
 ) error {
-	client, err := provider.NewAnthropicClient(cfg.AnthropicAPIKey, chooseModel(cfg, modelOverride))
+	client, err := newProviderClient(cfg, modelOverride)
 	if err != nil {
-		fmt.Fprintln(errOut, "provider error:", err)
+		fmt.Fprintln(errOut, errors.FriendlyProvider(err))
 		return err
 	}
 
 	w := bufio.NewWriter(out)
 	defer w.Flush()
 
-	fmt.Fprintln(w, "koba chat - interactive mode (Ctrl+D to exit)")
+	providerName := providerNameFromEnv(cfg)
+	mode := "LIVE"
+	switch providerName {
+	case "mock":
+		mode = "MOCK"
+	case "ollama":
+		mode = "LOCAL"
+	}
+	banner := term.Banner(strings.ToUpper(providerName), chooseModel(cfg, modelOverride), mode)
+	fmt.Fprintln(w, banner)
 
 	var messages []provider.Message
 	if systemPrompt != "" {
@@ -59,18 +70,20 @@ func RunChat(
 			Content: line,
 		})
 
-		fmt.Fprint(w, term.AssistantPrefix())
-		w.Flush()
-
+		stopSpinner := term.StartSpinner(errOut, "Koba is thinking...")
 		streamObj, err := client.Chat(ctx, messages, provider.ChatOptions{
 			Model:       modelOverride,
 			Temperature: cfg.Temperature,
 			Stream:      stream,
 		})
+		stopSpinner()
 		if err != nil {
-			fmt.Fprintln(errOut, "chat error:", err)
+			fmt.Fprintln(errOut, errors.FriendlyProvider(err))
 			continue
 		}
+
+		fmt.Fprint(w, term.AssistantPrefix())
+		w.Flush()
 
 		var respText strings.Builder
 		for {
@@ -128,9 +141,9 @@ func RunAsk(
 		return fmt.Errorf("no question provided")
 	}
 
-	client, err := provider.NewAnthropicClient(cfg.AnthropicAPIKey, chooseModel(cfg, modelOverride))
+	client, err := newProviderClient(cfg, modelOverride)
 	if err != nil {
-		fmt.Fprintln(errOut, "provider error:", err)
+		fmt.Fprintln(errOut, errors.FriendlyProvider(err))
 		return err
 	}
 
@@ -146,11 +159,13 @@ func RunAsk(
 		Content: question,
 	})
 
+	stopSpinner := term.StartSpinner(errOut, "Koba is thinking...")
 	streamObj, err := client.Chat(ctx, messages, provider.ChatOptions{
 		Model:       modelOverride,
 		Temperature: cfg.Temperature,
 		Stream:      true,
 	})
+	stopSpinner()
 	if err != nil {
 		return err
 	}
@@ -158,6 +173,9 @@ func RunAsk(
 
 	w := bufio.NewWriter(out)
 	defer w.Flush()
+
+	fmt.Fprint(w, term.AssistantPrefix())
+	w.Flush()
 
 	for {
 		chunk, err := streamObj.Recv(ctx)
@@ -189,5 +207,43 @@ func chooseModel(cfg config.Config, override string) string {
 	}
 	return "claude-3-haiku-20240307"
 }
+
+// newProviderClient chooses which provider to use based on environment and
+// config. Env var KOBA_PROVIDER takes precedence over config.DefaultProvider.
+// Supported values: "anthropic", "ollama", "mock".
+func newProviderClient(cfg config.Config, modelOverride string) (provider.Provider, error) {
+	name := providerNameFromEnv(cfg)
+	switch name {
+	case "mock":
+		return provider.NewMockClient(), nil
+	case "ollama":
+		baseURL := cfg.OllamaBaseURL
+		if baseURL == "" {
+			baseURL = "http://localhost:11434"
+		}
+		model := chooseModel(cfg, modelOverride)
+		if strings.Contains(model, "claude") {
+			model = "codellama"
+		}
+		return provider.NewOllamaClient(baseURL, model)
+	case "anthropic", "":
+		fallthrough
+	default:
+		return provider.NewAnthropicClient(cfg.AnthropicAPIKey, chooseModel(cfg, modelOverride))
+	}
+}
+
+func providerNameFromEnv(cfg config.Config) string {
+	name := os.Getenv("KOBA_PROVIDER")
+	if name == "" {
+		name = strings.ToLower(strings.TrimSpace(cfg.DefaultProvider))
+	}
+	if name == "" {
+		name = "anthropic"
+	}
+	return name
+}
+
+
 
 

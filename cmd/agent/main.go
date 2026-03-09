@@ -13,7 +13,8 @@ import (
 func main() {
 	ctx := context.Background()
 
-	cfg, err := config.Load()
+	cwd, _ := os.Getwd()
+	cfg, err := config.LoadForDir(cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
 		os.Exit(1)
@@ -21,7 +22,7 @@ func main() {
 
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: agent <command> [args]")
-		fmt.Println("Commands: chat, ask, code")
+		fmt.Println("Commands: chat, ask, code, review, apply, run, doctor")
 		os.Exit(1)
 	}
 
@@ -56,6 +57,41 @@ func main() {
 		_ = codeFlags.Parse(args)
 
 		if err := app.RunCode(ctx, cfg, os.Stdin, os.Stdout, os.Stderr, codeFlags.Args(), *model); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "review":
+		reviewFlags := flag.NewFlagSet("review", flag.ExitOnError)
+		model := reviewFlags.String("model", "", "override default model")
+		_ = reviewFlags.Parse(args)
+
+		if err := app.RunReview(ctx, cfg, os.Stdin, os.Stdout, os.Stderr, *model); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "apply":
+		applyFlags := flag.NewFlagSet("apply", flag.ExitOnError)
+		model := applyFlags.String("model", "", "override default model")
+		yes := applyFlags.Bool("yes", false, "apply without prompting")
+		dryRun := applyFlags.Bool("dry-run", false, "show diff only, do not apply")
+		force := applyFlags.Bool("force", false, "apply even with uncommitted changes")
+		_ = applyFlags.Parse(args)
+
+		if err := app.RunApply(ctx, cfg, os.Stdin, os.Stdout, os.Stderr, applyFlags.Args(), *model, *yes, *dryRun, *force); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "run":
+		runFlags := flag.NewFlagSet("run", flag.ExitOnError)
+		model := runFlags.String("model", "", "override default model")
+		_ = runFlags.Parse(args)
+
+		if err := app.RunRun(ctx, cfg, os.Stdin, os.Stdout, os.Stderr, runFlags.Args(), *model); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "doctor":
+		if err := app.RunDoctor(cfg, os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
