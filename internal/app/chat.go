@@ -174,9 +174,7 @@ func RunAsk(
 	w := bufio.NewWriter(out)
 	defer w.Flush()
 
-	fmt.Fprint(w, term.AssistantPrefix())
-	w.Flush()
-
+	var resp strings.Builder
 	for {
 		chunk, err := streamObj.Recv(ctx)
 		if err != nil {
@@ -186,14 +184,16 @@ func RunAsk(
 			break
 		}
 		if chunk.Text != "" {
-			fmt.Fprint(w, chunk.Text)
-			w.Flush()
+			resp.WriteString(chunk.Text)
 		}
 		if chunk.Done {
 			break
 		}
 	}
-	fmt.Fprintln(w)
+
+	fmt.Fprint(w, term.AssistantPrefix())
+	fmt.Fprint(w, term.FormatResponse(resp.String()))
+	w.Flush()
 
 	return nil
 }

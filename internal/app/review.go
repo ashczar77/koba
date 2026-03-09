@@ -86,18 +86,23 @@ Structure your response as:
 		Temperature: cfg.Temperature,
 		Stream:      true,
 	})
-	stopSpinner()
 	if err != nil {
+		stopSpinner()
 		return err
 	}
-	defer streamObj.Close()
+	defer stopSpinner()
 
 	w := bufio.NewWriter(out)
 	defer w.Flush()
 
-	fmt.Fprint(w, term.AssistantPrefix())
-	w.Flush()
+	flushOut := func() {
+		w.Flush()
+		if f, ok := out.(interface{ Flush() error }); ok {
+			_ = f.Flush()
+		}
+	}
 
+	prefixPrinted := false
 	for {
 		chunk, err := streamObj.Recv(ctx)
 		if err != nil {
@@ -107,14 +112,24 @@ Structure your response as:
 			break
 		}
 		if chunk.Text != "" {
+			stopSpinner() // must stop before printing so \r doesn't overwrite our output
+			if !prefixPrinted {
+				fmt.Fprint(w, term.AssistantPrefix())
+				prefixPrinted = true
+			}
 			fmt.Fprint(w, chunk.Text)
-			w.Flush()
+			flushOut()
 		}
 		if chunk.Done {
 			break
 		}
 	}
-	fmt.Fprintln(w)
+	defer streamObj.Close()
+
+	if prefixPrinted {
+		fmt.Fprintln(w)
+		flushOut()
+	}
 
 	return nil
 }

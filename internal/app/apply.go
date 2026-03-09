@@ -118,22 +118,19 @@ func RunApply(
 		return fmt.Errorf("no diff to apply")
 	}
 
-	fmt.Fprintln(out, term.AssistantPrefix()+"Proposed diff:")
-	fmt.Fprintln(out, "---")
-	fmt.Fprintln(out, diffContent)
-	fmt.Fprintln(out, "---")
+	fmt.Fprint(out, term.AssistantPrefix())
+	fmt.Fprint(out, term.FormatDiffBlock(diffContent, dryRun))
 
 	if dryRun {
-		fmt.Fprintln(out, "(dry-run: diff not applied)")
 		return nil
 	}
 
 	if !force {
 		clean, err := contextx.GitStatusClean(repoRoot)
 		if err == nil && !clean {
-			fmt.Fprintln(errOut, "Working tree has uncommitted changes. Commit or stash them first, or use --force.")
-			fmt.Fprintln(errOut, errors.FriendlyGit(fmt.Errorf("uncommitted changes")))
-			return fmt.Errorf("uncommitted changes; use --force to override")
+			msg := errors.FriendlyGit(fmt.Errorf("uncommitted changes"))
+			fmt.Fprintln(errOut, msg)
+			return fmt.Errorf("%s", msg)
 		}
 	}
 

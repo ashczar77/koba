@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"koba/internal/app"
 	"koba/internal/config"
@@ -21,13 +22,33 @@ func main() {
 	}
 
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: agent <command> [args]")
-		fmt.Println("Commands: chat, ask, code, review, apply, run, doctor")
-		os.Exit(1)
+		// No args: start interactive session (everything you type goes to Koba)
+		if err := app.RunSession(ctx, cfg, os.Stdin, os.Stdout, os.Stderr, ""); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
+
+	knownCommands := map[string]bool{
+		"chat": true, "ask": true, "code": true, "review": true,
+		"apply": true, "run": true, "doctor": true,
+	}
+
+	if !knownCommands[cmd] {
+		request := cmd
+		if len(args) > 0 {
+			request = cmd + " " + strings.Join(args, " ")
+		}
+		if err := app.RunDo(ctx, cfg, os.Stdin, os.Stdout, os.Stderr, request, ""); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	switch cmd {
 	case "chat":

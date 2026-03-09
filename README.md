@@ -27,10 +27,11 @@ The goal is simple: **give you a smart coding assistant directly in your shell**
 From the project root:
 
 ```bash
-go install ./cmd/agent
+go install ./cmd/koba
 ```
 
-This builds an `agent` binary into your `$GOBIN` (usually `$HOME/go/bin`).
+This builds a `koba` binary into your `$GOBIN` (usually `$HOME/go/bin`).  
+(You can also build `./cmd/agent` to get an `agent` binary with the same behavior.)
 
 Make sure that directory is on your `PATH`.
 
@@ -87,12 +88,45 @@ system_prompt: "You are helping with this specific codebase."
 
 ### Usage
 
-#### `agent chat`
+#### Start Koba (recommended)
 
-Interactive multi-turn chat session.
+Run `koba` with no arguments to start an interactive session. Everything you type is sent to Koba and routed automatically (review, apply, ask, code, run):
 
 ```bash
-agent chat
+koba
+```
+
+Then type requests like:
+- `review my diff`
+- `add a comment to main.go`
+- `explain how goroutines work`
+- `find all usages of Foo`
+
+#### Single-shot request
+
+Or run a one-off request:
+
+```bash
+koba "refactor the auth handler"
+koba "review my diff"
+koba "add error handling to main.go"
+koba "find all usages of Foo"
+koba "explain how this function works"
+```
+
+Routing:
+- **review** → reviews your git diff
+- **refactor/fix/add/change/modify** → proposes and applies a diff
+- **find/list/search/grep** → agentic with tools
+- **explain/how/what/why** → single-turn Q&A
+- **default** → repo-aware code suggestions
+
+#### `koba chat`
+
+Interactive multi-turn chat (with conversation history).
+
+```bash
+koba chat
 ```
 
 Flags:
@@ -101,20 +135,20 @@ Flags:
 - `--no-stream` – disable streaming output.
 - `--system` – custom system prompt.
 
-#### `agent ask`
+#### `koba ask`
 
 Single-turn question, then exit.
 
 From CLI args:
 
 ```bash
-agent ask "How do I write a Go HTTP server?"
+koba ask "How do I write a Go HTTP server?"
 ```
 
 Or from stdin:
 
 ```bash
-echo "Explain this function" | agent ask
+echo "Explain this function" | koba ask
 ```
 
 Flags:
@@ -122,12 +156,12 @@ Flags:
 - `--model` – override the default model.
 - `--system` – custom system prompt.
 
-#### `agent code`
+#### `koba code`
 
 Coding-focused helper that uses basic repo context (run this inside a git repo).
 
 ```bash
-agent code "Refactor the handler in handlers/user.go for clarity"
+koba code "Refactor the handler in handlers/user.go for clarity"
 ```
 
 `agent code` will:
@@ -137,30 +171,30 @@ agent code "Refactor the handler in handlers/user.go for clarity"
 - Read `README.md` and `go.mod` (with size limits).
 - Send that context, plus your request, to the model with a coding-focused system prompt.
 
-#### `agent review`
+#### `koba review`
 
 Review your current `git diff` and get structured feedback.
 
 ```bash
-agent review
+koba review
 # Or pipe a diff:
-git diff | agent review
+git diff | koba review
 ```
 
 Flags:
 
 - `--model` – override the default model.
 
-#### `agent apply`
+#### `koba apply`
 
 Propose a unified diff for your request, show it, and optionally apply it.
 
 ```bash
-agent apply "add error handling to main.go"
+koba apply "add error handling to main.go"
 # Or with auto-confirm:
-agent apply --yes "fix the typo in README"
+koba apply --yes "fix the typo in README"
 # Preview only (no apply):
-agent apply --dry-run "refactor handler"
+koba apply --dry-run "refactor handler"
 ```
 
 Flags:
@@ -170,20 +204,20 @@ Flags:
 - `--dry-run` – show diff only, do not apply.
 - `--force` – apply even with uncommitted changes (default: refuse).
 
-#### `agent doctor`
+#### `koba doctor`
 
 Run provider diagnostics: check Anthropic key, Ollama reachability, and list pulled models.
 
 ```bash
-agent doctor
+koba doctor
 ```
 
-#### `agent run`
+#### `koba run`
 
 Agentic mode: the model can use tools (read file, run command, grep) to accomplish tasks.
 
 ```bash
-agent run "Find all usages of Foo and summarize them"
+koba run "Find all usages of Foo and summarize them"
 ```
 
 The model outputs `TOOL: read_file path`, `TOOL: run cmd`, or `TOOL: grep pattern path`. Koba executes them and continues the conversation.

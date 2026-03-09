@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -45,15 +46,8 @@ type ollamaMessage struct {
 type ollamaRequest struct {
 	Model    string         `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Stream   bool           `json:"stream"`
 	Options  map[string]any `json:"options,omitempty"`
-}
-
-type ollamaResponse struct {
-	Message struct {
-		Content string `json:"content"`
-	} `json:"message"`
-	Done bool `json:"done"`
 }
 
 type ollamaStreamChunk struct {
@@ -63,7 +57,7 @@ type ollamaStreamChunk struct {
 	Done bool `json:"done"`
 }
 
-// Chat performs a chat completion against the local Ollama API.
+// Chat performs a chat completion against the local Ollama API with real streaming.
 func (c *OllamaClient) Chat(ctx context.Context, messages []Message, opts ChatOptions) (Stream, error) {
 	var om []ollamaMessage
 	for _, m := range messages {
@@ -82,7 +76,7 @@ func (c *OllamaClient) Chat(ctx context.Context, messages []Message, opts ChatOp
 	reqBody := ollamaRequest{
 		Model:    model,
 		Messages: om,
-		Stream:   false,
+		Stream:   true,
 	}
 	if opts.Temperature > 0 {
 		reqBody.Options = map[string]any{"temperature": opts.Temperature}
@@ -103,17 +97,54 @@ func (c *OllamaClient) Chat(ctx context.Context, messages []Message, opts ChatOp
 	if err != nil {
 		return nil, fmt.Errorf("ollama request failed (is Ollama running?): %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return nil, fmt.Errorf("ollama API error: %s: %s", resp.Status, string(b))
 	}
 
-	var ar ollamaResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
-		return nil, err
-	}
+	return &ollamaStream{body: bufio.NewReader(resp.Body), resp: resp}, nil
+}
 
-	return newMemoryStream(ar.Message.Content), nil
+// ollamaStream reads NDJSON from the response and yields content deltas.
+type ollamaStream struct {
+	body *bufio.Reader
+	resp *http.Response
+	done bool
+}
+
+func (s *ollamaStream) Recv(ctx context.Context) (StreamChunk, error) {
+	if s.done {
+		return StreamChunk{Done: true}, io.EOF
+	}
+	line, err := s.body.ReadBytes('\n')
+	if err != nil {
+		if err == io.EOF {
+			s.done = true
+			return StreamChunk{Done: true}, io.EOF
+		}
+		return StreamChunk{}, err
+	}
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 {
+		return s.Recv(ctx)
+	}
+	var chunk ollamaStreamChunk
+	if err := json.Unmarshal(line, &chunk); err != nil {
+		return StreamChunk{}, err
+	}
+	if chunk.Done {
+		s.done = true
+		return StreamChunk{Text: chunk.Message.Content, Done: true}, io.EOF
+	}
+	return StreamChunk{Text: chunk.Message.Content, Done: false}, nil
+}
+
+func (s *ollamaStream) Close() error {
+	s.done = true
+	if s.resp != nil && s.resp.Body != nil {
+		return s.resp.Body.Close()
+	}
+	return nil
 }

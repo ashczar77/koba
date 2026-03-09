@@ -117,42 +117,154 @@ func Banner(provider, model, mode string) string {
 // Spinner frames for a "thinking" animation.
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+// FormatDiff colorizes a unified diff string for terminal output.
+func FormatDiff(diff string) string {
+	lines := strings.Split(diff, "\n")
+	var out []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+			out = append(out, colorDim+line+colorReset)
+		} else if strings.HasPrefix(line, "@@") {
+			out = append(out, colorYellow+line+colorReset)
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			out = append(out, colorRed+line+colorReset)
+		} else if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			out = append(out, colorGreen+line+colorReset)
+		} else {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// FormatDiffBlock renders a proposed diff with a styled header and optional footer.
+func FormatDiffBlock(diff string, dryRun bool) string {
+	sep := colorDim + "────────────────────────────────────────────────────────────────────────" + colorReset
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(colorMagenta + " Proposed diff " + colorReset + "\n")
+	sb.WriteString(sep + "\n")
+	sb.WriteString(FormatDiff(diff) + "\n")
+	sb.WriteString(sep + "\n")
+	if dryRun {
+		sb.WriteString(colorYellow + " (dry-run: diff not applied) " + colorReset + "\n")
+	}
+	return sb.String()
+}
+
+// FormatReview formats review output with section headers and spacing.
+func FormatReview(text string) string {
+	// Style numbered section starts (1. 2. 3. 4.) at line start
+	lines := strings.Split(text, "\n")
+	var out []string
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "1. ") || strings.HasPrefix(trimmed, "2. ") ||
+			strings.HasPrefix(trimmed, "3. ") || strings.HasPrefix(trimmed, "4. ") {
+			out = append(out, "")
+			out = append(out, colorMagenta+trimmed+colorReset)
+		} else if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
+			out = append(out, "  "+colorDim+trimmed+colorReset)
+		} else {
+			out = append(out, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(out, "\n")) + "\n"
+}
+
+// FormatResponse formats ask/code output: wrap code blocks in a subtle box.
+func FormatResponse(text string) string {
+	const codeFence = "```"
+	var sb strings.Builder
+	lines := strings.Split(text, "\n")
+	inBlock := false
+	var block []string
+
+	flushBlock := func() {
+		if len(block) == 0 {
+			return
+		}
+		sb.WriteString(colorDim + "┌─ code ─────────────────────────────────────────────────────────────┐" + colorReset + "\n")
+		for _, l := range block {
+			sb.WriteString(colorGreen + l + colorReset + "\n")
+		}
+		sb.WriteString(colorDim + "└──────────────────────────────────────────────────────────────────┘" + colorReset + "\n")
+		block = block[:0]
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == codeFence || strings.HasPrefix(trimmed, codeFence) {
+			if inBlock {
+				flushBlock()
+				inBlock = false
+			} else {
+				inBlock = true
+			}
+			continue
+		}
+		if inBlock {
+			block = append(block, line)
+			continue
+		}
+		sb.WriteString(line + "\n")
+	}
+	flushBlock()
+	return strings.TrimRight(sb.String(), "\n") + "\n"
+}
+
 // StartSpinner starts an animated spinner on w with the given message. It returns
 // a stop function that clears the line and stops the spinner. Call it when the
-// response starts or on error.
+// response starts or on error. Stop blocks until the spinner goroutine has
+// fully exited, so no \r overwrites can occur after stop returns.
 func StartSpinner(w io.Writer, message string) (stop func()) {
-	var done bool
+	stopCh := make(chan struct{})
+	exited := make(chan struct{})
 	var mu sync.Mutex
 	tick := time.NewTicker(80 * time.Millisecond)
 	go func() {
+		defer close(exited)
 		i := 0
 		for {
 			select {
+			case <-stopCh:
+				return
 			case <-tick.C:
+				select {
+				case <-stopCh:
+					return
+				default:
+				}
 				mu.Lock()
-				if done {
+				select {
+				case <-stopCh:
 					mu.Unlock()
 					return
+				default:
 				}
 				frame := spinnerFrames[i%len(spinnerFrames)]
 				i++
-				mu.Unlock()
 				fmt.Fprintf(w, "\r%s%s %s%s", colorGreen, frame, colorReset, message)
 				if f, ok := w.(interface{ Flush() error }); ok {
 					_ = f.Flush()
 				}
+				mu.Unlock()
 			}
 		}
 	}()
+	var once sync.Once
 	return func() {
-		mu.Lock()
-		done = true
-		mu.Unlock()
-		tick.Stop()
-		fmt.Fprint(w, "\r\033[K")
-		if f, ok := w.(interface{ Flush() error }); ok {
-			_ = f.Flush()
-		}
+		once.Do(func() {
+			close(stopCh)
+			tick.Stop()
+			<-exited
+			mu.Lock()
+			mu.Unlock() // wait for any in-flight write to finish
+			fmt.Fprint(w, "\r\033[K")
+			if f, ok := w.(interface{ Flush() error }); ok {
+				_ = f.Flush()
+			}
+		})
 	}
 }
 

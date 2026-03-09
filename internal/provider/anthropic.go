@@ -1,12 +1,14 @@
 package provider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -59,9 +61,7 @@ type anthropicResponse struct {
 	Content []anthropicContentBlock `json:"content"`
 }
 
-// Chat performs a chat completion call. For simplicity, this implementation
-// uses Anthropic's non-streaming API and then exposes the result via the
-// Stream interface in chunks.
+// Chat performs a streaming chat completion call. Response is streamed via SSE.
 func (c *AnthropicClient) Chat(ctx context.Context, messages []Message, opts ChatOptions) (Stream, error) {
 	reqBody, err := c.buildRequestBody(messages, opts)
 	if err != nil {
@@ -75,33 +75,20 @@ func (c *AnthropicClient) Chat(ctx context.Context, messages []Message, opts Cha
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.apiKey)
-	// Version string chosen to match current Claude messages API.
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return nil, fmt.Errorf("anthropic API error: %s: %s", resp.Status, string(b))
 	}
 
-	var ar anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
-		return nil, err
-	}
-
-	var fullText string
-	for _, block := range ar.Content {
-		if block.Type == "text" {
-			fullText += block.Text
-		}
-	}
-
-	return newMemoryStream(fullText), nil
+	return newAnthropicStream(resp), nil
 }
 
 func (c *AnthropicClient) buildRequestBody(messages []Message, opts ChatOptions) ([]byte, error) {
@@ -137,49 +124,94 @@ func (c *AnthropicClient) buildRequestBody(messages []Message, opts ChatOptions)
 		MaxTokens:   2048,
 		Temperature: temp,
 		Messages:    am,
-		Stream:      false,
+		Stream:      true,
 	}
 
 	return json.Marshal(&req)
 }
 
-// memoryStream is a simple in-memory implementation of Stream that
-// yields the response text in fixed-size chunks.
-type memoryStream struct {
-	text   string
-	offset int
-	closed bool
+// anthropicStream parses SSE from the messages API and yields text_delta chunks.
+type anthropicStream struct {
+	body *bufio.Reader
+	resp *http.Response
+	done bool
 }
 
-func newMemoryStream(text string) Stream {
-	return &memoryStream{text: text}
+// contentBlockDeltaEvent matches Anthropic SSE content_block_delta data.
+type contentBlockDeltaEvent struct {
+	Type  string `json:"type"`
+	Index int    `json:"index"`
+	Delta struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"delta"`
 }
 
-func (s *memoryStream) Recv(ctx context.Context) (StreamChunk, error) {
-	if s.closed {
+func newAnthropicStream(resp *http.Response) Stream {
+	return &anthropicStream{body: bufio.NewReader(resp.Body), resp: resp}
+}
+
+func (s *anthropicStream) Recv(ctx context.Context) (StreamChunk, error) {
+	if s.done {
 		return StreamChunk{Done: true}, io.EOF
 	}
-	if s.offset >= len(s.text) {
-		s.closed = true
-		return StreamChunk{Done: true}, io.EOF
+	var eventType string
+	for {
+		line, err := s.body.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				s.done = true
+				return StreamChunk{Done: true}, io.EOF
+			}
+			return StreamChunk{}, err
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		if bytes.HasPrefix(line, []byte("event:")) {
+			eventType = strings.TrimSpace(string(line[6:]))
+			continue
+		}
+		if bytes.HasPrefix(line, []byte("data:")) {
+			data := bytes.TrimSpace(line[5:])
+			if len(data) == 0 {
+				continue
+			}
+			if eventType == "message_stop" {
+				s.done = true
+				return StreamChunk{Done: true}, io.EOF
+			}
+			if eventType == "error" {
+				var errData struct {
+					Type  string `json:"type"`
+					Error struct {
+						Type    string `json:"type"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				_ = json.Unmarshal(data, &errData)
+				s.done = true
+				return StreamChunk{}, fmt.Errorf("anthropic stream error: %s", errData.Error.Message)
+			}
+			if eventType == "content_block_delta" {
+				var ev contentBlockDeltaEvent
+				if err := json.Unmarshal(data, &ev); err != nil {
+					continue
+				}
+				if ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
+					return StreamChunk{Text: ev.Delta.Text, Done: false}, nil
+				}
+			}
+		}
 	}
-
-	const chunkSize = 512
-	end := s.offset + chunkSize
-	if end > len(s.text) {
-		end = len(s.text)
-	}
-	chunk := s.text[s.offset:end]
-	s.offset = end
-
-	return StreamChunk{
-		Text: chunk,
-		Done: s.offset >= len(s.text),
-	}, nil
 }
 
-func (s *memoryStream) Close() error {
-	s.closed = true
+func (s *anthropicStream) Close() error {
+	s.done = true
+	if s.resp != nil && s.resp.Body != nil {
+		return s.resp.Body.Close()
+	}
 	return nil
 }
 
