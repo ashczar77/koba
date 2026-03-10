@@ -41,7 +41,7 @@ func RunChat(
 	case "ollama":
 		mode = "LOCAL"
 	}
-	banner := term.Banner(strings.ToUpper(providerName), chooseModel(cfg, modelOverride), mode)
+	banner := term.Banner(strings.ToUpper(providerName), modelForDisplay(providerName, cfg, modelOverride), mode)
 	fmt.Fprintln(w, banner)
 
 	var messages []provider.Message
@@ -76,25 +76,29 @@ func RunChat(
 			Temperature: cfg.Temperature,
 			Stream:      stream,
 		})
-		stopSpinner()
 		if err != nil {
+			stopSpinner()
 			fmt.Fprintln(errOut, errors.FriendlyProvider(err))
 			continue
 		}
 
-		fmt.Fprint(w, term.AssistantPrefix())
-		w.Flush()
-
 		var respText strings.Builder
+		prefixPrinted := false
 		for {
 			chunk, err := streamObj.Recv(ctx)
 			if err != nil {
 				if err != io.EOF {
+					stopSpinner()
 					fmt.Fprintln(errOut, "stream error:", err)
 				}
 				break
 			}
 			if chunk.Text != "" {
+				stopSpinner()
+				if !prefixPrinted {
+					fmt.Fprint(w, term.AssistantPrefix())
+					prefixPrinted = true
+				}
 				respText.WriteString(chunk.Text)
 				fmt.Fprint(w, chunk.Text)
 				w.Flush()
@@ -103,8 +107,11 @@ func RunChat(
 				break
 			}
 		}
+		stopSpinner() // ensure stopped on any exit path
 		_ = streamObj.Close()
-		fmt.Fprintln(w)
+		if prefixPrinted {
+			fmt.Fprintln(w)
+		}
 
 		messages = append(messages, provider.Message{
 			Role:    provider.RoleAssistant,
@@ -165,36 +172,42 @@ func RunAsk(
 		Temperature: cfg.Temperature,
 		Stream:      true,
 	})
-	stopSpinner()
 	if err != nil {
+		stopSpinner()
 		return err
 	}
+	defer stopSpinner()
 	defer streamObj.Close()
 
 	w := bufio.NewWriter(out)
 	defer w.Flush()
 
-	var resp strings.Builder
+	prefixPrinted := false
 	for {
 		chunk, err := streamObj.Recv(ctx)
 		if err != nil {
 			if err != io.EOF {
+				stopSpinner()
 				fmt.Fprintln(errOut, "stream error:", err)
 			}
 			break
 		}
 		if chunk.Text != "" {
-			resp.WriteString(chunk.Text)
+			stopSpinner()
+			if !prefixPrinted {
+				fmt.Fprint(w, term.AssistantPrefix())
+				prefixPrinted = true
+			}
+			fmt.Fprint(w, chunk.Text)
+			w.Flush()
 		}
 		if chunk.Done {
 			break
 		}
 	}
-
-	fmt.Fprint(w, term.AssistantPrefix())
-	fmt.Fprint(w, term.FormatResponse(resp.String()))
-	w.Flush()
-
+	if prefixPrinted {
+		fmt.Fprintln(w)
+	}
 	return nil
 }
 
@@ -206,6 +219,28 @@ func chooseModel(cfg config.Config, override string) string {
 		return cfg.DefaultModel
 	}
 	return "claude-3-haiku-20240307"
+}
+
+// modelForDisplay returns the model name to show in the UI (banner, doctor).
+// It applies the same provider-specific mapping as newProviderClient so the
+// displayed model matches what is actually used (e.g. Ollama shows "codellama"
+// when config default is an Anthropic model).
+func modelForDisplay(providerName string, cfg config.Config, override string) string {
+	model := chooseModel(cfg, override)
+	switch providerName {
+	case "ollama":
+		if strings.Contains(model, "claude") {
+			return "codellama"
+		}
+		if model == "" {
+			return "llama3.2"
+		}
+		return model
+	case "mock":
+		return "mock"
+	default:
+		return model
+	}
 }
 
 // newProviderClient chooses which provider to use based on environment and

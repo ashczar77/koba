@@ -99,27 +99,32 @@ Prefer concrete suggestions, diffs, or code snippets over high-level ideas.`, cw
 		Temperature: cfg.Temperature,
 		Stream:      true,
 	})
-	stopSpinner()
 	if err != nil {
+		stopSpinner()
 		return err
 	}
+	defer stopSpinner()
 	defer streamObj.Close()
 
 	w := bufio.NewWriter(out)
 	defer w.Flush()
 
-	fmt.Fprint(w, term.AssistantPrefix())
-	w.Flush()
-
+	prefixPrinted := false
 	for {
 		chunk, err := streamObj.Recv(ctx)
 		if err != nil {
 			if err != io.EOF {
+				stopSpinner()
 				fmt.Fprintln(errOut, "stream error:", err)
 			}
 			break
 		}
 		if chunk.Text != "" {
+			stopSpinner()
+			if !prefixPrinted {
+				fmt.Fprint(w, term.AssistantPrefix())
+				prefixPrinted = true
+			}
 			fmt.Fprint(w, chunk.Text)
 			w.Flush()
 		}
@@ -127,7 +132,9 @@ Prefer concrete suggestions, diffs, or code snippets over high-level ideas.`, cw
 			break
 		}
 	}
-	fmt.Fprintln(w)
+	if prefixPrinted {
+		fmt.Fprintln(w)
+	}
 
 	return nil
 }

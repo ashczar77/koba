@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"koba/internal/config"
@@ -13,6 +14,7 @@ import (
 
 // RunSession starts an interactive session: everything the user types is
 // routed and handled (review, apply, ask, code, run). Like Kiro/Gemini CLI.
+// Each session is logged under ~/.koba/sessions/<timestamp>.log for koba history.
 func RunSession(
 	ctx context.Context,
 	cfg config.Config,
@@ -28,11 +30,27 @@ func RunSession(
 	case "ollama":
 		mode = "LOCAL"
 	}
-	banner := term.Banner(strings.ToUpper(providerName), chooseModel(cfg, modelOverride), mode)
-	fmt.Fprint(out, banner)
+	banner := term.Banner(strings.ToUpper(providerName), modelForDisplay(providerName, cfg, modelOverride), mode)
+
+	// Optional session log: tee response output so we can list/replay later.
+	var sessionFile *os.File
+	var combinedOut io.Writer = out
+	if _, err := EnsureSessionsDir(); err == nil {
+		_, f, err := StartSessionLog()
+		if err == nil {
+			sessionFile = f
+			defer func() { _ = sessionFile.Close() }()
+			fmt.Fprint(sessionFile, banner)
+			combinedOut = io.MultiWriter(out, sessionFile)
+		}
+	}
 
 	w := bufio.NewWriter(out)
+	combined := bufio.NewWriter(combinedOut)
 	defer w.Flush()
+	defer combined.Flush()
+
+	fmt.Fprint(out, banner)
 
 	scanner := bufio.NewScanner(in)
 	for {
@@ -47,12 +65,15 @@ func RunSession(
 			continue
 		}
 
-		if err := RunDo(ctx, cfg, in, w, errOut, line, modelOverride); err != nil {
+		if sessionFile != nil {
+			fmt.Fprintf(sessionFile, "%s%s\n", term.UserPrefix(), line)
+		}
+
+		if err := RunDo(ctx, cfg, in, combined, errOut, line, modelOverride); err != nil {
 			fmt.Fprintln(errOut, err)
 		}
-		// Ensure newline after each response
-		fmt.Fprintln(w)
-		w.Flush()
+		fmt.Fprintln(combined)
+		combined.Flush()
 	}
 
 	if err := scanner.Err(); err != nil && err != io.EOF {
@@ -60,3 +81,4 @@ func RunSession(
 	}
 	return nil
 }
+

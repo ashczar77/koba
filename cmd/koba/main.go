@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"koba/internal/app"
@@ -35,7 +36,7 @@ func main() {
 
 	knownCommands := map[string]bool{
 		"chat": true, "ask": true, "code": true, "review": true,
-		"apply": true, "run": true, "doctor": true,
+		"apply": true, "run": true, "doctor": true, "history": true,
 	}
 
 	if !knownCommands[cmd] {
@@ -113,6 +114,33 @@ func main() {
 		}
 	case "doctor":
 		if err := app.RunDoctor(cfg, os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "history":
+		listLimit := 10
+		showIndex := -1
+		for i := 0; i < len(args); i++ {
+			if args[i] == "-n" {
+				if i+1 >= len(args) {
+					fmt.Fprintf(os.Stderr, "history: -n requires a number\n")
+					os.Exit(1)
+				}
+				n, err := strconv.Atoi(args[i+1])
+				if err != nil || n < 0 {
+					fmt.Fprintf(os.Stderr, "history: -n must be a non-negative number\n")
+					os.Exit(1)
+				}
+				listLimit = n
+				i++
+				continue
+			}
+			if n, err := strconv.Atoi(args[i]); err == nil && n >= 0 {
+				showIndex = n
+				break
+			}
+		}
+		if err := app.RunHistory(os.Stdout, os.Stderr, listLimit, showIndex); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}

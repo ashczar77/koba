@@ -90,10 +90,11 @@ func RunApply(
 		Temperature: cfg.Temperature,
 		Stream:      true,
 	})
-	stopSpinner()
 	if err != nil {
+		stopSpinner()
 		return err
 	}
+	defer stopSpinner()
 	defer streamObj.Close()
 
 	var resp strings.Builder

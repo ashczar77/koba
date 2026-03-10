@@ -165,24 +165,29 @@ Repo root: ` + repoRoot
 			Temperature: cfg.Temperature,
 			Stream:      true,
 		})
-		stopSpinner()
 		if err != nil {
+			stopSpinner()
 			return err
 		}
 
 		var resp strings.Builder
-		fmt.Fprint(w, term.AssistantPrefix())
-		w.Flush()
+		prefixPrinted := false
 		for {
 			chunk, err := streamObj.Recv(ctx)
 			if err != nil {
 				if err != io.EOF {
+					stopSpinner()
 					fmt.Fprintln(errOut, "stream error:", err)
 				}
 				break
 			}
 			resp.WriteString(chunk.Text)
 			if chunk.Text != "" {
+				stopSpinner()
+				if !prefixPrinted {
+					fmt.Fprint(w, term.AssistantPrefix())
+					prefixPrinted = true
+				}
 				fmt.Fprint(w, chunk.Text)
 				w.Flush()
 			}
@@ -190,8 +195,11 @@ Repo root: ` + repoRoot
 				break
 			}
 		}
+		stopSpinner()
 		streamObj.Close()
-		fmt.Fprintln(w)
+		if prefixPrinted {
+			fmt.Fprintln(w)
+		}
 
 		calls := parseToolCalls(resp.String())
 		if len(calls) == 0 {

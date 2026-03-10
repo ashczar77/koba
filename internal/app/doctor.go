@@ -16,10 +16,7 @@ import (
 // RunDoctor runs provider diagnostics and prints a summary.
 func RunDoctor(cfg config.Config, out, errOut io.Writer) error {
 	providerName := providerNameFromEnv(cfg)
-	model := chooseModel(cfg, "")
-	if providerName == "ollama" && strings.Contains(model, "claude") {
-		model = "codellama"
-	}
+	model := modelForDisplay(providerName, cfg, "")
 
 	w := out
 	fmt.Fprintf(w, "%sKoba Doctor%s\n\n", term.ColorMagenta(), term.ColorReset())
@@ -32,7 +29,7 @@ func RunDoctor(cfg config.Config, out, errOut io.Writer) error {
 	case "anthropic":
 		checkAnthropic(cfg, w)
 	case "ollama":
-		checkOllama(cfg, w)
+		checkOllama(cfg, w, providerName)
 	case "mock":
 		fmt.Fprintf(w, "%sMock provider: no external checks needed.%s\n", term.ColorDim(), term.ColorReset())
 	default:
@@ -71,7 +68,7 @@ func checkAnthropic(cfg config.Config, w io.Writer) {
 	fmt.Fprintf(w, "  (We don't validate the key here to avoid API cost.)\n")
 }
 
-func checkOllama(cfg config.Config, w io.Writer) {
+func checkOllama(cfg config.Config, w io.Writer, providerName string) {
 	baseURL := cfg.OllamaBaseURL
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
@@ -122,10 +119,7 @@ func checkOllama(cfg config.Config, w io.Writer) {
 	fmt.Fprintf(w, "%s\n", strings.Join(names, ", "))
 
 	// Check if configured model is available
-	model := chooseModel(cfg, "")
-	if strings.Contains(model, "claude") {
-		model = "codellama"
-	}
+	model := modelForDisplay(providerName, cfg, "")
 	found := false
 	for _, m := range tags.Models {
 		if m.Name == model || strings.HasPrefix(m.Name, model+":") {
