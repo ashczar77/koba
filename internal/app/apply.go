@@ -38,7 +38,11 @@ func RunApply(
 
 	repoRoot, err := contextx.FindRepoRoot(".")
 	if err != nil || repoRoot == "" {
-		return fmt.Errorf("%s", errors.FriendlyGit(fmt.Errorf("not inside a git repository")))
+		repoRoot, err = os.Getwd()
+		if err != nil || repoRoot == "" {
+			return fmt.Errorf("%s", errors.FriendlyGit(fmt.Errorf("not inside a git repository")))
+		}
+		// Use current directory so apply still works (e.g. create hello.sh) when not in git.
 	}
 
 	request := strings.TrimSpace(strings.Join(args, " "))
@@ -67,7 +71,9 @@ func RunApply(
 	systemPrompt := "You are Koba. The user wants you to produce a unified diff that implements their request.\n" +
 		"Rules:\n" +
 		"- Output ONLY a valid unified diff. No explanations before or after.\n" +
-		"- Wrap the diff in a fenced block: ```diff ... ```\n" +
+		"- Use a fenced block with the label 'diff': write exactly ```diff on one line, then the diff, then ``` on its own line.\n" +
+		"- Example format:\n  ```diff\n  --- a/main.go\n  +++ b/main.go\n  @@ -0,0 +1,10 @@\n  +package main\n  +...\n  ```\n" +
+		"- You may output multiple ```diff blocks (e.g. one per file); Koba will apply them all.\n" +
 		"- Use paths relative to the repository root.\n" +
 		"- Follow existing code style."
 
@@ -112,10 +118,55 @@ func RunApply(
 		}
 	}
 
-	diffContent := extractDiffBlock(resp.String())
-	if diffContent == "" {
+	respStr := resp.String()
+	blocks := extractDiffBlocks(respStr)
+	var diffContent string
+	if len(blocks) > 0 {
+		diffContent = strings.Join(blocks, "\n\n")
+	} else {
+		// Fallback: model often outputs ```go or ```bash instead of ```diff. If we find one code block
+		// and the request mentions a single file path, write that file.
+		content, path := extractCodeBlockAndPath(respStr, request)
+		if content != "" && path != "" {
+			diffContent = ""
+			if !dryRun {
+				if !force {
+					if _, inRepo := contextx.FindRepoRoot("."); inRepo == nil {
+						clean, err := contextx.GitStatusClean(repoRoot)
+						if err == nil && !clean {
+							msg := errors.FriendlyGit(fmt.Errorf("uncommitted changes"))
+							fmt.Fprintln(errOut, msg)
+							return fmt.Errorf("%s", msg)
+						}
+					}
+				}
+				if !autoYes {
+					fmt.Fprintf(out, "Create %s with this content? [y/N] ", path)
+					scanner := bufio.NewScanner(in)
+					if !scanner.Scan() {
+						return nil
+					}
+					if a := strings.TrimSpace(strings.ToLower(scanner.Text())); a != "y" && a != "yes" {
+						fmt.Fprintln(out, "Aborted.")
+						return nil
+					}
+				}
+				fullPath := filepath.Join(repoRoot, path)
+				if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+					return fmt.Errorf("create directory: %w", err)
+				}
+				if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+					return fmt.Errorf("write file: %w", err)
+				}
+				fmt.Fprintln(out, "Wrote", path)
+			} else {
+				fmt.Fprint(out, term.AssistantPrefix())
+				fmt.Fprintf(out, "Would create %s:\n%s\n", path, content)
+			}
+			return nil
+		}
 		fmt.Fprintln(errOut, "No diff block found in model response. Raw output:")
-		fmt.Fprintln(errOut, resp.String())
+		fmt.Fprintln(errOut, respStr)
 		return fmt.Errorf("no diff to apply")
 	}
 
@@ -126,12 +177,15 @@ func RunApply(
 		return nil
 	}
 
+	// Only require clean git status when we're in a repo and applying a real diff (not creating a new file).
 	if !force {
-		clean, err := contextx.GitStatusClean(repoRoot)
-		if err == nil && !clean {
-			msg := errors.FriendlyGit(fmt.Errorf("uncommitted changes"))
-			fmt.Fprintln(errOut, msg)
-			return fmt.Errorf("%s", msg)
+		if _, err := contextx.FindRepoRoot("."); err == nil {
+			clean, err := contextx.GitStatusClean(repoRoot)
+			if err == nil && !clean {
+				msg := errors.FriendlyGit(fmt.Errorf("uncommitted changes"))
+				fmt.Fprintln(errOut, msg)
+				return fmt.Errorf("%s", msg)
+			}
 		}
 	}
 
@@ -148,14 +202,80 @@ func RunApply(
 		}
 	}
 
-	// Write diff to temp file and apply with patch
+	if err := applyPatch(repoRoot, diffContent, out, errOut); err != nil {
+		fmt.Fprintln(errOut, "Patch failed. Check the output above for conflicting hunks.")
+		return err
+	}
+	fmt.Fprintln(out, "Diff applied successfully.")
+	return nil
+}
+
+// diffBlockRe matches only ```diff ... ``` blocks (allows optional space after backticks).
+var diffBlockRe = regexp.MustCompile("(?s)```\\s*diff\\s*\\n(.*?)```")
+
+// anyCodeBlockRe matches any fenced block (e.g. ```go, ```bash, ```).
+var anyCodeBlockRe = regexp.MustCompile("(?s)```(?:\\w+)?\\s*\\n(.*?)```")
+
+// pathInRequestRe matches a likely file path in the user request (e.g. main.go, src/foo.py).
+var pathInRequestRe = regexp.MustCompile("\\b([\\w./_-]+\\.(go|sh|py|js|ts|html|css|json|mod|txt|yaml|yml|md|rb|java|kt)\\b)")
+
+// extractDiffBlock returns the first ```diff block content, or empty.
+func extractDiffBlock(s string) string {
+	blocks := extractDiffBlocks(s)
+	if len(blocks) == 0 {
+		return ""
+	}
+	return blocks[0]
+}
+
+// extractDiffBlocks returns all ```diff blocks' content in order (for multi-file patches).
+func extractDiffBlocks(s string) []string {
+	var out []string
+	for _, m := range diffBlockRe.FindAllStringSubmatch(s, -1) {
+		if len(m) >= 2 {
+			block := strings.TrimSpace(m[1])
+			if block != "" {
+				out = append(out, block)
+			}
+		}
+	}
+	return out
+}
+
+// extractCodeBlockAndPath returns the first fenced code block's content and a file path
+// inferred from the request (e.g. "main.go" from "scaffold main.go"). Used when the
+// model outputs ```go instead of ```diff so we can still create the file.
+func extractCodeBlockAndPath(respStr, request string) (content, path string) {
+	m := anyCodeBlockRe.FindStringSubmatch(respStr)
+	if len(m) < 2 {
+		return "", ""
+	}
+	content = m[1]
+	// Strip optional language tag on first line
+	if nl := strings.Index(content, "\n"); nl >= 0 {
+		first := strings.TrimSpace(content[:nl])
+		if first != "" && !strings.Contains(first, " ") {
+			content = content[nl+1:]
+		}
+	}
+	content = strings.TrimSuffix(content, "\n")
+
+	pm := pathInRequestRe.FindStringSubmatch(request)
+	if len(pm) < 2 {
+		return content, ""
+	}
+	return content, pm[1]
+}
+
+// applyPatch writes diffContent to a temp file and runs patch -p1 in repoRoot.
+// Caller is responsible for confirmations and dry-run; this only performs the patch.
+func applyPatch(repoRoot, diffContent string, out, errOut io.Writer) error {
 	tmp, err := os.CreateTemp("", "koba-apply-*.diff")
 	if err != nil {
 		return err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
-
 	if _, err := tmp.WriteString(diffContent); err != nil {
 		tmp.Close()
 		return err
@@ -163,25 +283,11 @@ func RunApply(
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-
 	cmd := exec.Command("patch", "-p1", "-d", repoRoot, "--forward", "-i", tmpPath)
 	cmd.Stdout = out
 	cmd.Stderr = errOut
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintln(errOut, "Patch failed. Check the output above for conflicting hunks.")
 		return fmt.Errorf("patch failed: %w", err)
 	}
-
-	fmt.Fprintln(out, "Diff applied successfully.")
 	return nil
-}
-
-var diffBlockRe = regexp.MustCompile("(?s)```(?:diff)?\\s*\\n(.*?)```")
-
-func extractDiffBlock(s string) string {
-	m := diffBlockRe.FindStringSubmatch(s)
-	if len(m) >= 2 {
-		return strings.TrimSpace(m[1])
-	}
-	return ""
 }

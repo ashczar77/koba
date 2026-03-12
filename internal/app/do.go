@@ -3,63 +3,17 @@ package app
 import (
 	"context"
 	"io"
+	"os"
 	"strings"
 
 	"koba/internal/config"
+	"koba/internal/contextx"
+	"koba/internal/provider"
 )
 
-// Intent is the classified action for a user request.
-type Intent string
-
-const (
-	IntentAsk    Intent = "ask"
-	IntentCode   Intent = "code"
-	IntentReview Intent = "review"
-	IntentApply  Intent = "apply"
-	IntentRun    Intent = "run"
-)
-
-// ClassifyIntent routes a request to the appropriate handler using heuristics.
-func ClassifyIntent(request string) Intent {
-	r := strings.ToLower(strings.TrimSpace(request))
-	if r == "" {
-		return IntentCode
-	}
-
-	// Question-like: explain, how, what, why
-	if strings.HasPrefix(r, "explain ") || strings.HasPrefix(r, "how ") ||
-		strings.HasPrefix(r, "what ") || strings.HasPrefix(r, "why ") ||
-		strings.HasSuffix(r, "?") {
-		return IntentAsk
-	}
-
-	// Review: explicit review request
-	if strings.Contains(r, "review") {
-		return IntentReview
-	}
-
-	// Apply: refactor, fix, add, change, modify, update, implement
-	applyWords := []string{"refactor", "fix ", "add ", "change ", "modify", "update ", "implement"}
-	for _, w := range applyWords {
-		if strings.Contains(r, w) {
-			return IntentApply
-		}
-	}
-
-	// Run: find, list, search, grep, run, execute
-	runWords := []string{"find ", "list ", "search ", "grep", " run ", "execute"}
-	for _, w := range runWords {
-		if strings.Contains(r, w) {
-			return IntentRun
-		}
-	}
-
-	// Default: code (repo-aware suggestions)
-	return IntentCode
-}
-
-// RunDo is the single entrypoint: it classifies the request and dispatches
-// to the appropriate handler (ask, code, review, apply, run).
+// RunDo is the single entrypoint. It uses one agentic flow: no keyword routing.
+// If messages is nil (e.g. CLI one-shot), a fresh conversation is started with the request.
+// If messages is non-nil (e.g. session), the request is appended and RunAgent continues the conversation.
 func RunDo(
 	ctx context.Context,
 	cfg config.Config,
@@ -67,27 +21,31 @@ func RunDo(
 	out, errOut io.Writer,
 	request string,
 	modelOverride string,
+	messages *[]provider.Message,
 ) error {
 	request = strings.TrimSpace(request)
-	if request == "" {
-		// No request: start interactive chat
+	if request == "" && (messages == nil || len(*messages) <= 1) {
+		// No request and no ongoing conversation: start interactive chat (legacy chat loop).
 		return RunChat(ctx, cfg, in, out, errOut, modelOverride, "", true)
 	}
 
-	intent := ClassifyIntent(request)
-
-	switch intent {
-	case IntentAsk:
-		return RunAsk(ctx, cfg, in, out, errOut, []string{request}, modelOverride, "")
-	case IntentReview:
-		return RunReview(ctx, cfg, in, out, errOut, modelOverride)
-	case IntentApply:
-		return RunApply(ctx, cfg, in, out, errOut, []string{request}, modelOverride, false, false, false)
-	case IntentRun:
-		return RunRun(ctx, cfg, in, out, errOut, []string{request}, modelOverride)
-	case IntentCode:
-		fallthrough
-	default:
-		return RunCode(ctx, cfg, in, out, errOut, []string{request}, modelOverride)
+	cwd, _ := os.Getwd()
+	repoRoot, _ := contextx.FindRepoRoot(".")
+	if repoRoot == "" {
+		repoRoot = cwd
 	}
+	systemPrompt := BuildAgentSystemPrompt(cwd, repoRoot)
+
+	if messages == nil {
+		// One-shot: start a new conversation.
+		msgs := []provider.Message{
+			{Role: provider.RoleSystem, Content: systemPrompt},
+			{Role: provider.RoleUser, Content: request},
+		}
+		return RunAgent(ctx, cfg, in, out, errOut, modelOverride, &msgs)
+	}
+
+	// Session: append the new user message and continue.
+	*messages = append(*messages, provider.Message{Role: provider.RoleUser, Content: request})
+	return RunAgent(ctx, cfg, in, out, errOut, modelOverride, messages)
 }

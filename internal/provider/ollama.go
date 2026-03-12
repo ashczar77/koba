@@ -39,33 +39,53 @@ func NewOllamaClient(baseURL, model string) (*OllamaClient, error) {
 }
 
 type ollamaMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string          `json:"role"`
+	Content   string          `json:"content,omitempty"`
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	ToolName  string          `json:"tool_name,omitempty"`
+}
+
+type ollamaToolCall struct {
+	Type     string `json:"type"`
+	Function struct {
+		Index      int                    `json:"index,omitempty"`
+		Name       string                 `json:"name"`
+		Arguments  map[string]interface{} `json:"arguments,omitempty"`
+	} `json:"function"`
+}
+
+type ollamaToolDef struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string                 `json:"name"`
+		Description string                 `json:"description"`
+		Parameters  map[string]interface{} `json:"parameters"`
+	} `json:"function"`
 }
 
 type ollamaRequest struct {
-	Model    string         `json:"model"`
-	Messages []ollamaMessage `json:"messages"`
-	Stream   bool           `json:"stream"`
-	Options  map[string]any `json:"options,omitempty"`
+	Model    string          `json:"model"`
+	Messages []ollamaMessage  `json:"messages"`
+	Stream   bool            `json:"stream"`
+	Tools    []ollamaToolDef `json:"tools,omitempty"`
+	Options  map[string]any  `json:"options,omitempty"`
 }
 
 type ollamaStreamChunk struct {
 	Message struct {
-		Content string `json:"content"`
+		Content   string          `json:"content"`
+		ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+		Done      bool            `json:"done"`
 	} `json:"message"`
 	Done bool `json:"done"`
 }
 
-// Chat performs a chat completion against the local Ollama API with real streaming.
+// Chat performs a chat completion against the local Ollama API.
+// When opts.Tools is set, uses a non-streaming request to get tool_calls and returns a stream that yields content once.
 func (c *OllamaClient) Chat(ctx context.Context, messages []Message, opts ChatOptions) (Stream, error) {
-	var om []ollamaMessage
-	for _, m := range messages {
-		role := string(m.Role)
-		if role == "" {
-			role = "user"
-		}
-		om = append(om, ollamaMessage{Role: role, Content: m.Content})
+	om, err := c.convertMessages(messages)
+	if err != nil {
+		return nil, err
 	}
 
 	model := opts.Model
@@ -76,10 +96,13 @@ func (c *OllamaClient) Chat(ctx context.Context, messages []Message, opts ChatOp
 	reqBody := ollamaRequest{
 		Model:    model,
 		Messages: om,
-		Stream:   true,
+		Stream:   len(opts.Tools) == 0,
 	}
 	if opts.Temperature > 0 {
 		reqBody.Options = map[string]any{"temperature": opts.Temperature}
+	}
+	if len(opts.Tools) > 0 {
+		reqBody.Tools = c.convertTools(opts.Tools)
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -104,7 +127,114 @@ func (c *OllamaClient) Chat(ctx context.Context, messages []Message, opts ChatOp
 		return nil, fmt.Errorf("ollama API error: %s: %s", resp.Status, string(b))
 	}
 
+	if len(opts.Tools) > 0 {
+		return c.readNonStreamResponse(resp)
+	}
 	return &ollamaStream{body: bufio.NewReader(resp.Body), resp: resp}, nil
+}
+
+func (c *OllamaClient) convertMessages(messages []Message) ([]ollamaMessage, error) {
+	var om []ollamaMessage
+	for _, m := range messages {
+		role := string(m.Role)
+		if role == "" {
+			role = "user"
+		}
+		switch m.Role {
+		case RoleTool:
+			om = append(om, ollamaMessage{Role: "tool", ToolName: m.ToolName, Content: m.Content})
+		case RoleAssistant:
+			msg := ollamaMessage{Role: "assistant", Content: m.Content}
+			if len(m.OptionalToolCalls) > 0 {
+				for i, tc := range m.OptionalToolCalls {
+					msg.ToolCalls = append(msg.ToolCalls, ollamaToolCall{
+						Type: "function",
+						Function: struct {
+							Index      int                    `json:"index,omitempty"`
+							Name       string                 `json:"name"`
+							Arguments  map[string]interface{} `json:"arguments,omitempty"`
+						}{Index: i, Name: tc.Name, Arguments: tc.Arguments},
+					})
+				}
+			}
+			om = append(om, msg)
+		default:
+			om = append(om, ollamaMessage{Role: role, Content: m.Content})
+		}
+	}
+	return om, nil
+}
+
+func (c *OllamaClient) convertTools(tools []ToolDef) []ollamaToolDef {
+	var out []ollamaToolDef
+	for _, t := range tools {
+		params := t.Parameters
+		if params == nil {
+			params = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+		}
+		out = append(out, ollamaToolDef{
+			Type: "function",
+			Function: struct {
+				Name        string                 `json:"name"`
+				Description string                 `json:"description"`
+				Parameters  map[string]interface{} `json:"parameters"`
+			}{Name: t.Name, Description: t.Description, Parameters: params},
+		})
+	}
+	return out
+}
+
+// ollamaToolResponse is the full message in a non-streaming response.
+type ollamaToolResponse struct {
+	Message struct {
+		Content   string          `json:"content"`
+		ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	} `json:"message"`
+}
+
+func (c *OllamaClient) readNonStreamResponse(resp *http.Response) (Stream, error) {
+	defer resp.Body.Close()
+	var full ollamaToolResponse
+	if err := json.NewDecoder(resp.Body).Decode(&full); err != nil {
+		return nil, fmt.Errorf("ollama response decode: %w", err)
+	}
+	var toolCalls []ToolCall
+	for _, oc := range full.Message.ToolCalls {
+		args := oc.Function.Arguments
+		if args == nil {
+			args = make(map[string]interface{})
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			ID:        fmt.Sprintf("%d", oc.Function.Index),
+			Name:      oc.Function.Name,
+			Arguments: args,
+		})
+	}
+	return &ollamaToolStream{content: full.Message.Content, toolCalls: toolCalls, done: false}, nil
+}
+
+// ollamaToolStream yields content once then Done; ToolCalls() returns the parsed tool calls.
+type ollamaToolStream struct {
+	content   string
+	toolCalls []ToolCall
+	done      bool
+}
+
+func (s *ollamaToolStream) Recv(ctx context.Context) (StreamChunk, error) {
+	if s.done {
+		return StreamChunk{Done: true}, io.EOF
+	}
+	s.done = true
+	return StreamChunk{Text: s.content, Done: true}, io.EOF
+}
+
+func (s *ollamaToolStream) Close() error {
+	s.done = true
+	return nil
+}
+
+func (s *ollamaToolStream) ToolCalls() []ToolCall {
+	return s.toolCalls
 }
 
 // ollamaStream reads NDJSON from the response and yields content deltas.
@@ -146,5 +276,9 @@ func (s *ollamaStream) Close() error {
 	if s.resp != nil && s.resp.Body != nil {
 		return s.resp.Body.Close()
 	}
+	return nil
+}
+
+func (s *ollamaStream) ToolCalls() []ToolCall {
 	return nil
 }

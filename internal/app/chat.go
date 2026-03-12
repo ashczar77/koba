@@ -230,10 +230,12 @@ func modelForDisplay(providerName string, cfg config.Config, override string) st
 	switch providerName {
 	case "ollama":
 		if strings.Contains(model, "claude") {
-			return "codellama"
+			// Map Anthropic-style default (e.g. "claude-3-haiku") to an Ollama model that supports tools.
+			return "qwen3"
 		}
 		if model == "" {
-			return "llama3.2"
+			// Default Ollama model; choose one that supports tools.
+			return "qwen3"
 		}
 		return model
 	case "mock":
@@ -258,7 +260,12 @@ func newProviderClient(cfg config.Config, modelOverride string) (provider.Provid
 		}
 		model := chooseModel(cfg, modelOverride)
 		if strings.Contains(model, "claude") {
-			model = "codellama"
+			// When config/default model is a Claude model name, map it to an Ollama model that supports tools.
+			model = "qwen3"
+		}
+		if model == "" {
+			// Default Ollama model; choose one that supports tools.
+			model = "qwen3"
 		}
 		return provider.NewOllamaClient(baseURL, model)
 	case "anthropic", "":

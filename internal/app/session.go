@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"koba/internal/config"
+	"koba/internal/contextx"
+	"koba/internal/provider"
 	"koba/internal/term"
 )
 
@@ -52,7 +54,18 @@ func RunSession(
 
 	fmt.Fprint(out, banner)
 
+	cwd, _ := os.Getwd()
+	repoRoot, _ := contextx.FindRepoRoot(".")
+	if repoRoot == "" {
+		repoRoot = cwd
+	}
+	messages := []provider.Message{
+		{Role: provider.RoleSystem, Content: BuildAgentSystemPrompt(cwd, repoRoot)},
+	}
+
 	scanner := bufio.NewScanner(in)
+	var lastUser string
+	var lastErr error
 	for {
 		fmt.Fprint(w, term.UserPrefix())
 		w.Flush()
@@ -69,7 +82,15 @@ func RunSession(
 			fmt.Fprintf(sessionFile, "%s%s\n", term.UserPrefix(), line)
 		}
 
-		if err := RunDo(ctx, cfg, in, combined, errOut, line, modelOverride); err != nil {
+		request := line
+		if lastErr != nil && lastUser != "" {
+			request = "Context: The user's previous message was: \"" + lastUser + "\". Koba returned an error: " + lastErr.Error() + "\n\nCurrent message: " + line
+		}
+		lastUser = line
+		lastErr = nil
+
+		if err := RunDo(ctx, cfg, in, combined, errOut, request, modelOverride, &messages); err != nil {
+			lastErr = err
 			fmt.Fprintln(errOut, err)
 		}
 		fmt.Fprintln(combined)

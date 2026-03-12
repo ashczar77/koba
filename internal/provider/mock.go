@@ -86,3 +86,7 @@ func (s *slowMemoryStream) Close() error {
 	return nil
 }
 
+func (s *slowMemoryStream) ToolCalls() []ToolCall {
+	return nil
+}
+

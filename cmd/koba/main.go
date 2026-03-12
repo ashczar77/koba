@@ -44,7 +44,7 @@ func main() {
 		if len(args) > 0 {
 			request = cmd + " " + strings.Join(args, " ")
 		}
-		if err := app.RunDo(ctx, cfg, os.Stdin, os.Stdout, os.Stderr, request, ""); err != nil {
+		if err := app.RunDo(ctx, cfg, os.Stdin, os.Stdout, os.Stderr, request, "", nil); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
