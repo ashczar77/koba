@@ -97,6 +97,8 @@ func RunSession(
 		combined.Flush()
 	}
 
+	fmt.Fprint(out, term.ExitMessage())
+
 	if err := scanner.Err(); err != nil && err != io.EOF {
 		fmt.Fprintln(errOut, "input error:", err)
 	}

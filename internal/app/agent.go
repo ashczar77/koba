@@ -116,14 +116,24 @@ func RunAgent(
 		var hadSuccessfulWrite bool
 		if len(toolCalls) > 0 {
 			for _, call := range toolCalls {
+				// Show subtle tool indicator
+				detail := ""
+				if v, ok := call.Arguments["path"]; ok {
+					detail = fmt.Sprint(v)
+				} else if v, ok := call.Arguments["cmd"]; ok {
+					detail = fmt.Sprint(v)
+				} else if v, ok := call.Arguments["pattern"]; ok {
+					detail = fmt.Sprint(v)
+				}
+				fmt.Fprint(w, term.ToolPrefix(call.Name, detail))
+				w.Flush()
+
 				result, err := ExecuteProviderTool(repoRoot, call)
 				if err != nil {
 					result = "Error: " + err.Error()
 				} else if call.Name == "write_file" {
 					hadSuccessfulWrite = true
 				}
-				fmt.Fprintf(w, "%s[Tool %s] %s\n%s\n", term.AssistantPrefix(), call.Name, call.Name, result)
-				w.Flush()
 				*messages = append(*messages, provider.Message{
 					Role:       provider.RoleTool,
 					Content:    result,

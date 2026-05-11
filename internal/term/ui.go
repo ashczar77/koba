@@ -4,15 +4,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 )
 
-// Simple ANSI-colored prefixes and layout helpers for the terminal UI.
-
+// ANSI color codes.
 const (
 	colorCyan    = "\033[36m"
 	colorGreen   = "\033[32m"
@@ -21,19 +20,27 @@ const (
 	colorReset   = "\033[0m"
 	colorRed     = "\033[31m"
 	colorYellow  = "\033[33m"
+	colorBold    = "\033[1m"
+	colorBlue    = "\033[34m"
 )
 
-// colorEnabled reports whether color output should be used.
-// Respects NO_COLOR env var and checks if stdout is a terminal.
+var colorEnabledOnce sync.Once
+var colorEnabledVal bool
+
 func colorEnabled() bool {
-	if os.Getenv("NO_COLOR") != "" {
-		return false
-	}
-	fi, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	colorEnabledOnce.Do(func() {
+		if os.Getenv("NO_COLOR") != "" {
+			colorEnabledVal = false
+			return
+		}
+		fi, err := os.Stdout.Stat()
+		if err != nil {
+			colorEnabledVal = false
+			return
+		}
+		colorEnabledVal = (fi.Mode() & os.ModeCharDevice) != 0
+	})
+	return colorEnabledVal
 }
 
 func color(c string) string {
@@ -51,146 +58,98 @@ func ColorReset() string   { return color(colorReset) }
 func ColorRed() string     { return color(colorRed) }
 func ColorYellow() string  { return color(colorYellow) }
 
-const bannerInnerWidth = 72
-
 var ansiStrip = regexp.MustCompile(`\033\[[0-9;]*m`)
 
+// ShortenPath returns a compact cwd: ~/foo or last 2 segments if deep.
+func ShortenPath(path string) string {
+	home, _ := os.UserHomeDir()
+	if home != "" && strings.HasPrefix(path, home) {
+		path = "~" + path[len(home):]
+	}
+	parts := strings.Split(path, string(filepath.Separator))
+	if len(parts) > 3 {
+		path = filepath.Join(parts[len(parts)-2], parts[len(parts)-1])
+	}
+	return path
+}
+
+// UserPrefix returns the colored user prompt with shortened cwd.
 func UserPrefix() string {
-	return color(colorCyan) + "you " + color(colorReset) + "▸ "
+	cwd, _ := os.Getwd()
+	short := ShortenPath(cwd)
+	return fmt.Sprintf("%s%s%s %s❯%s ", color(colorDim), short, color(colorReset), color(colorCyan), color(colorReset))
 }
 
+// AssistantPrefix returns the colored assistant prompt.
 func AssistantPrefix() string {
-	return color(colorGreen) + "koba" + color(colorReset) + " ▸ "
+	return color(colorMagenta) + "koba" + color(colorReset) + " › "
 }
 
-// visibleLen returns the number of visible runes (ANSI codes stripped).
-func visibleLen(s string) int {
-	return utf8.RuneCountInString(ansiStrip.ReplaceAllString(s, ""))
+// ToolPrefix returns a subtle tool indicator.
+func ToolPrefix(toolName, detail string) string {
+	return fmt.Sprintf("  %s⚙ %s%s %s%s\n", color(colorDim), toolName, color(colorReset), color(colorDim)+detail+color(colorReset), "")
 }
 
-// centerLine centers s within the banner width. Padding uses visible length.
-func centerLine(s string) string {
-	vis := visibleLen(s)
-	if vis > bannerInnerWidth {
-		// Truncate: keep prefix, lose end (including any trailing ANSI)
-		runes := []rune(ansiStrip.ReplaceAllString(s, ""))
-		s = string(runes[:bannerInnerWidth-3]) + "..."
-		vis = bannerInnerWidth
-	}
-	pad := bannerInnerWidth - vis
-	left := pad / 2
-	right := pad - left
-	return "│ " + strings.Repeat(" ", left) + s + strings.Repeat(" ", right) + " │"
-}
-
-// padLine left-pads content and ensures total visible width fits; truncates model if needed.
-func padLine(s string) string {
-	vis := visibleLen(s)
-	if vis > bannerInnerWidth {
-		runes := []rune(ansiStrip.ReplaceAllString(s, ""))
-		s = string(runes[:bannerInnerWidth-3]) + "..."
-	}
-	return "│ " + s + strings.Repeat(" ", bannerInnerWidth-visibleLen(s)) + " │"
-}
-
-// Banner renders a portal-style header for the session.
+// Banner renders a compact, clean header for the session.
 func Banner(provider, model, mode string) string {
-	top := "┌" + strings.Repeat("─", bannerInnerWidth+2) + "┐"
-	bot := "└" + strings.Repeat("─", bannerInnerWidth+2) + "┘"
-
-	logo := []string{
-		fmt.Sprintf("%s ██╗  ██╗ ██████╗ ██████╗  █████╗ %s", color(colorMagenta), color(colorReset)),
-		fmt.Sprintf("%s ██║ ██╔╝██╔═══██╗██╔══██╗██╔══██╗%s", color(colorMagenta), color(colorReset)),
-		fmt.Sprintf("%s █████╔╝ ██║   ██║██████╔╝███████║%s", color(colorMagenta), color(colorReset)),
-		fmt.Sprintf("%s ██╔═██╗ ██║   ██║██╔══██╗██╔══██║%s", color(colorMagenta), color(colorReset)),
-		fmt.Sprintf("%s ██║  ██╗╚██████╔╝██████╔╝██║  ██║%s", color(colorMagenta), color(colorReset)),
-		fmt.Sprintf("%s ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝%s", color(colorMagenta), color(colorReset)),
+	if len(model) > 30 {
+		model = model[:27] + "..."
 	}
-
-	tagline := fmt.Sprintf("%sFuturistic coding companion in your terminal%s", color(colorDim), color(colorReset))
-
-	if len(model) > 28 {
-		model = model[:25] + "..."
-	}
-	status := fmt.Sprintf("%s●%s Mode: %s%-5s%s  Provider: %s%-8s%s  Model: %s%s%s",
-		color(colorGreen), color(colorReset),
-		color(colorCyan), mode, color(colorReset),
-		color(colorMagenta), provider, color(colorReset),
-		color(colorGreen), model, color(colorReset),
-	)
-
-	lines := []string{top}
-	for _, l := range logo {
-		lines = append(lines, centerLine(l))
-	}
-	lines = append(lines, centerLine(""))
-	lines = append(lines, centerLine(tagline))
-	lines = append(lines, centerLine(""))
-	lines = append(lines, padLine(status))
-	lines = append(lines, bot)
-
-	help := fmt.Sprintf("%sType your message and press Enter. Ctrl+D to exit.%s", color(colorDim), color(colorReset))
-	return strings.Join(lines, "\n") + "\n\n" + help + "\n"
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("  %s%skoba%s", color(colorBold), color(colorMagenta), color(colorReset)))
+	sb.WriteString(fmt.Sprintf(" %s— your coding companion%s\n", color(colorDim), color(colorReset)))
+	sb.WriteString(fmt.Sprintf("  %s%s • %s • %s%s\n", color(colorDim), mode, provider, model, color(colorReset)))
+	sb.WriteString(fmt.Sprintf("  %sType a message to begin. Ctrl+D to exit.%s\n\n", color(colorDim), color(colorReset)))
+	return sb.String()
 }
 
-// Spinner frames for a "thinking" animation.
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+// ExitMessage returns a clean goodbye.
+func ExitMessage() string {
+	return fmt.Sprintf("\n  %s👋 See you next time.%s\n", color(colorDim), color(colorReset))
+}
 
 // FormatDiff colorizes a unified diff string for terminal output.
 func FormatDiff(diff string) string {
 	lines := strings.Split(diff, "\n")
 	var out []string
 	for _, line := range lines {
-		if strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+		switch {
+		case strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++"):
 			out = append(out, color(colorDim)+line+color(colorReset))
-		} else if strings.HasPrefix(line, "@@") {
+		case strings.HasPrefix(line, "@@"):
 			out = append(out, color(colorYellow)+line+color(colorReset))
-		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
 			out = append(out, color(colorRed)+line+color(colorReset))
-		} else if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
 			out = append(out, color(colorGreen)+line+color(colorReset))
-		} else {
+		default:
 			out = append(out, line)
 		}
 	}
 	return strings.Join(out, "\n")
 }
 
-// FormatDiffBlock renders a proposed diff with a styled header and optional footer.
+// FormatDiffBlock renders a proposed diff with a styled header.
 func FormatDiffBlock(diff string, dryRun bool) string {
-	sep := color(colorDim) + "────────────────────────────────────────────────────────────────────────" + color(colorReset)
+	sep := color(colorDim) + strings.Repeat("─", 60) + color(colorReset)
 	var sb strings.Builder
-	sb.WriteString("\n")
-	sb.WriteString(color(colorMagenta) + " Proposed diff " + color(colorReset) + "\n")
+	sb.WriteString("\n" + color(colorMagenta) + " Proposed diff" + color(colorReset) + "\n")
 	sb.WriteString(sep + "\n")
 	sb.WriteString(FormatDiff(diff) + "\n")
 	sb.WriteString(sep + "\n")
 	if dryRun {
-		sb.WriteString(color(colorYellow) + " (dry-run: diff not applied) " + color(colorReset) + "\n")
+		sb.WriteString(color(colorYellow) + " (dry-run: not applied)" + color(colorReset) + "\n")
 	}
 	return sb.String()
 }
 
-// FormatReview formats review output with section headers and spacing.
+// FormatReview formats review output with section headers.
 func FormatReview(text string) string {
-	lines := strings.Split(text, "\n")
-	var out []string
-	for _, line := range lines {
-		trimmed := strings.TrimLeft(line, " \t")
-		if strings.HasPrefix(trimmed, "1. ") || strings.HasPrefix(trimmed, "2. ") ||
-			strings.HasPrefix(trimmed, "3. ") || strings.HasPrefix(trimmed, "4. ") {
-			out = append(out, "")
-			out = append(out, color(colorMagenta)+trimmed+color(colorReset))
-		} else if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
-			out = append(out, "  "+color(colorDim)+trimmed+color(colorReset))
-		} else {
-			out = append(out, line)
-		}
-	}
-	return strings.TrimSpace(strings.Join(out, "\n")) + "\n"
+	return FormatResponse(text)
 }
 
-// FormatResponse formats ask/code output: wrap code blocks in a subtle box.
+// FormatResponse renders markdown-like formatting: headers, bold, code blocks, lists.
 func FormatResponse(text string) string {
 	const codeFence = "```"
 	var sb strings.Builder
@@ -202,17 +161,17 @@ func FormatResponse(text string) string {
 		if len(block) == 0 {
 			return
 		}
-		sb.WriteString(color(colorDim) + "┌─ code ─────────────────────────────────────────────────────────────┐" + color(colorReset) + "\n")
+		sb.WriteString(color(colorDim) + "  ┌──────────────────────────────────────────────────────────┐" + color(colorReset) + "\n")
 		for _, l := range block {
-			sb.WriteString(color(colorGreen) + l + color(colorReset) + "\n")
+			sb.WriteString(color(colorGreen) + "  │ " + l + color(colorReset) + "\n")
 		}
-		sb.WriteString(color(colorDim) + "└──────────────────────────────────────────────────────────────────┘" + color(colorReset) + "\n")
+		sb.WriteString(color(colorDim) + "  └──────────────────────────────────────────────────────────┘" + color(colorReset) + "\n")
 		block = block[:0]
 	}
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == codeFence || strings.HasPrefix(trimmed, codeFence) {
+		if strings.HasPrefix(trimmed, codeFence) {
 			if inBlock {
 				flushBlock()
 				inBlock = false
@@ -225,16 +184,54 @@ func FormatResponse(text string) string {
 			block = append(block, line)
 			continue
 		}
-		sb.WriteString(line + "\n")
+		// Markdown headers
+		if strings.HasPrefix(trimmed, "### ") {
+			sb.WriteString(color(colorBold) + "  " + trimmed[4:] + color(colorReset) + "\n")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			sb.WriteString(color(colorBold) + color(colorCyan) + trimmed[3:] + color(colorReset) + "\n")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") {
+			sb.WriteString(color(colorBold) + color(colorMagenta) + trimmed[2:] + color(colorReset) + "\n")
+			continue
+		}
+		// Lists
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			sb.WriteString("  • " + trimmed[2:] + "\n")
+			continue
+		}
+		// Numbered lists (keep as-is but indent)
+		if len(trimmed) > 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && strings.Contains(trimmed[:3], ".") {
+			sb.WriteString("  " + trimmed + "\n")
+			continue
+		}
+		// Inline bold **text**
+		rendered := renderInlineBold(line)
+		// Inline code `text`
+		rendered = renderInlineCode(rendered)
+		sb.WriteString(rendered + "\n")
 	}
 	flushBlock()
 	return strings.TrimRight(sb.String(), "\n") + "\n"
 }
 
-// StartSpinner starts an animated spinner on w with the given message. It returns
-// a stop function that clears the line and stops the spinner. Call it when the
-// response starts or on error. Stop blocks until the spinner goroutine has
-// fully exited, so no \r overwrites can occur after stop returns.
+var boldRe = regexp.MustCompile(`\*\*(.+?)\*\*`)
+var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
+
+func renderInlineBold(s string) string {
+	return boldRe.ReplaceAllString(s, color(colorBold)+"$1"+color(colorReset))
+}
+
+func renderInlineCode(s string) string {
+	return inlineCodeRe.ReplaceAllString(s, color(colorCyan)+"$1"+color(colorReset))
+}
+
+// Spinner frames.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// StartSpinner starts an animated spinner. Returns a stop function.
 func StartSpinner(w io.Writer, message string) (stop func()) {
 	stopCh := make(chan struct{})
 	exited := make(chan struct{})
@@ -262,7 +259,7 @@ func StartSpinner(w io.Writer, message string) (stop func()) {
 				}
 				frame := spinnerFrames[i%len(spinnerFrames)]
 				i++
-				fmt.Fprintf(w, "\r%s%s %s%s", color(colorGreen), frame, color(colorReset), message)
+				fmt.Fprintf(w, "\r  %s%s %s%s", color(colorMagenta), frame, message, color(colorReset))
 				if f, ok := w.(interface{ Flush() error }); ok {
 					_ = f.Flush()
 				}
@@ -277,7 +274,7 @@ func StartSpinner(w io.Writer, message string) (stop func()) {
 			tick.Stop()
 			<-exited
 			mu.Lock()
-			mu.Unlock() // wait for any in-flight write to finish
+			mu.Unlock()
 			fmt.Fprint(w, "\r\033[K")
 			if f, ok := w.(interface{ Flush() error }); ok {
 				_ = f.Flush()
@@ -285,4 +282,3 @@ func StartSpinner(w io.Writer, message string) (stop func()) {
 		})
 	}
 }
-
