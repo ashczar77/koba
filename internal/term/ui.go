@@ -3,6 +3,7 @@ package term
 import (
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -22,24 +23,44 @@ const (
 	colorYellow  = "\033[33m"
 )
 
-func ColorCyan() string    { return colorCyan }
-func ColorGreen() string  { return colorGreen }
-func ColorMagenta() string { return colorMagenta }
-func ColorDim() string    { return colorDim }
-func ColorReset() string  { return colorReset }
-func ColorRed() string    { return colorRed }
-func ColorYellow() string { return colorYellow }
+// colorEnabled reports whether color output should be used.
+// Respects NO_COLOR env var and checks if stdout is a terminal.
+func colorEnabled() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func color(c string) string {
+	if !colorEnabled() {
+		return ""
+	}
+	return c
+}
+
+func ColorCyan() string    { return color(colorCyan) }
+func ColorGreen() string   { return color(colorGreen) }
+func ColorMagenta() string { return color(colorMagenta) }
+func ColorDim() string     { return color(colorDim) }
+func ColorReset() string   { return color(colorReset) }
+func ColorRed() string     { return color(colorRed) }
+func ColorYellow() string  { return color(colorYellow) }
 
 const bannerInnerWidth = 72
 
 var ansiStrip = regexp.MustCompile(`\033\[[0-9;]*m`)
 
 func UserPrefix() string {
-	return colorCyan + "you " + colorReset + "▸ "
+	return color(colorCyan) + "you " + color(colorReset) + "▸ "
 }
 
 func AssistantPrefix() string {
-	return colorGreen + "koba" + colorReset + " ▸ "
+	return color(colorGreen) + "koba" + color(colorReset) + " ▸ "
 }
 
 // visibleLen returns the number of visible runes (ANSI codes stripped).
@@ -77,27 +98,25 @@ func Banner(provider, model, mode string) string {
 	top := "┌" + strings.Repeat("─", bannerInnerWidth+2) + "┐"
 	bot := "└" + strings.Repeat("─", bannerInnerWidth+2) + "┘"
 
-	// Big ASCII art for KOBA
 	logo := []string{
-		fmt.Sprintf("%s ██╗  ██╗ ██████╗ ██████╗  █████╗ %s", colorMagenta, colorReset),
-		fmt.Sprintf("%s ██║ ██╔╝██╔═══██╗██╔══██╗██╔══██╗%s", colorMagenta, colorReset),
-		fmt.Sprintf("%s █████╔╝ ██║   ██║██████╔╝███████║%s", colorMagenta, colorReset),
-		fmt.Sprintf("%s ██╔═██╗ ██║   ██║██╔══██╗██╔══██║%s", colorMagenta, colorReset),
-		fmt.Sprintf("%s ██║  ██╗╚██████╔╝██████╔╝██║  ██║%s", colorMagenta, colorReset),
-		fmt.Sprintf("%s ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝%s", colorMagenta, colorReset),
+		fmt.Sprintf("%s ██╗  ██╗ ██████╗ ██████╗  █████╗ %s", color(colorMagenta), color(colorReset)),
+		fmt.Sprintf("%s ██║ ██╔╝██╔═══██╗██╔══██╗██╔══██╗%s", color(colorMagenta), color(colorReset)),
+		fmt.Sprintf("%s █████╔╝ ██║   ██║██████╔╝███████║%s", color(colorMagenta), color(colorReset)),
+		fmt.Sprintf("%s ██╔═██╗ ██║   ██║██╔══██╗██╔══██║%s", color(colorMagenta), color(colorReset)),
+		fmt.Sprintf("%s ██║  ██╗╚██████╔╝██████╔╝██║  ██║%s", color(colorMagenta), color(colorReset)),
+		fmt.Sprintf("%s ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝%s", color(colorMagenta), color(colorReset)),
 	}
 
-	tagline := fmt.Sprintf("%sFuturistic coding companion in your terminal%s", colorDim, colorReset)
+	tagline := fmt.Sprintf("%sFuturistic coding companion in your terminal%s", color(colorDim), color(colorReset))
 
-	// Truncate model if too long for status line
 	if len(model) > 28 {
 		model = model[:25] + "..."
 	}
 	status := fmt.Sprintf("%s●%s Mode: %s%-5s%s  Provider: %s%-8s%s  Model: %s%s%s",
-		colorGreen, colorReset,
-		colorCyan, mode, colorReset,
-		colorMagenta, provider, colorReset,
-		colorGreen, model, colorReset,
+		color(colorGreen), color(colorReset),
+		color(colorCyan), mode, color(colorReset),
+		color(colorMagenta), provider, color(colorReset),
+		color(colorGreen), model, color(colorReset),
 	)
 
 	lines := []string{top}
@@ -110,7 +129,7 @@ func Banner(provider, model, mode string) string {
 	lines = append(lines, padLine(status))
 	lines = append(lines, bot)
 
-	help := fmt.Sprintf("%sType your message and press Enter. Ctrl+D to exit.%s", colorDim, colorReset)
+	help := fmt.Sprintf("%sType your message and press Enter. Ctrl+D to exit.%s", color(colorDim), color(colorReset))
 	return strings.Join(lines, "\n") + "\n\n" + help + "\n"
 }
 
@@ -123,13 +142,13 @@ func FormatDiff(diff string) string {
 	var out []string
 	for _, line := range lines {
 		if strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
-			out = append(out, colorDim+line+colorReset)
+			out = append(out, color(colorDim)+line+color(colorReset))
 		} else if strings.HasPrefix(line, "@@") {
-			out = append(out, colorYellow+line+colorReset)
+			out = append(out, color(colorYellow)+line+color(colorReset))
 		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
-			out = append(out, colorRed+line+colorReset)
+			out = append(out, color(colorRed)+line+color(colorReset))
 		} else if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
-			out = append(out, colorGreen+line+colorReset)
+			out = append(out, color(colorGreen)+line+color(colorReset))
 		} else {
 			out = append(out, line)
 		}
@@ -139,22 +158,21 @@ func FormatDiff(diff string) string {
 
 // FormatDiffBlock renders a proposed diff with a styled header and optional footer.
 func FormatDiffBlock(diff string, dryRun bool) string {
-	sep := colorDim + "────────────────────────────────────────────────────────────────────────" + colorReset
+	sep := color(colorDim) + "────────────────────────────────────────────────────────────────────────" + color(colorReset)
 	var sb strings.Builder
 	sb.WriteString("\n")
-	sb.WriteString(colorMagenta + " Proposed diff " + colorReset + "\n")
+	sb.WriteString(color(colorMagenta) + " Proposed diff " + color(colorReset) + "\n")
 	sb.WriteString(sep + "\n")
 	sb.WriteString(FormatDiff(diff) + "\n")
 	sb.WriteString(sep + "\n")
 	if dryRun {
-		sb.WriteString(colorYellow + " (dry-run: diff not applied) " + colorReset + "\n")
+		sb.WriteString(color(colorYellow) + " (dry-run: diff not applied) " + color(colorReset) + "\n")
 	}
 	return sb.String()
 }
 
 // FormatReview formats review output with section headers and spacing.
 func FormatReview(text string) string {
-	// Style numbered section starts (1. 2. 3. 4.) at line start
 	lines := strings.Split(text, "\n")
 	var out []string
 	for _, line := range lines {
@@ -162,9 +180,9 @@ func FormatReview(text string) string {
 		if strings.HasPrefix(trimmed, "1. ") || strings.HasPrefix(trimmed, "2. ") ||
 			strings.HasPrefix(trimmed, "3. ") || strings.HasPrefix(trimmed, "4. ") {
 			out = append(out, "")
-			out = append(out, colorMagenta+trimmed+colorReset)
+			out = append(out, color(colorMagenta)+trimmed+color(colorReset))
 		} else if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
-			out = append(out, "  "+colorDim+trimmed+colorReset)
+			out = append(out, "  "+color(colorDim)+trimmed+color(colorReset))
 		} else {
 			out = append(out, line)
 		}
@@ -184,11 +202,11 @@ func FormatResponse(text string) string {
 		if len(block) == 0 {
 			return
 		}
-		sb.WriteString(colorDim + "┌─ code ─────────────────────────────────────────────────────────────┐" + colorReset + "\n")
+		sb.WriteString(color(colorDim) + "┌─ code ─────────────────────────────────────────────────────────────┐" + color(colorReset) + "\n")
 		for _, l := range block {
-			sb.WriteString(colorGreen + l + colorReset + "\n")
+			sb.WriteString(color(colorGreen) + l + color(colorReset) + "\n")
 		}
-		sb.WriteString(colorDim + "└──────────────────────────────────────────────────────────────────┘" + colorReset + "\n")
+		sb.WriteString(color(colorDim) + "└──────────────────────────────────────────────────────────────────┘" + color(colorReset) + "\n")
 		block = block[:0]
 	}
 
@@ -244,7 +262,7 @@ func StartSpinner(w io.Writer, message string) (stop func()) {
 				}
 				frame := spinnerFrames[i%len(spinnerFrames)]
 				i++
-				fmt.Fprintf(w, "\r%s%s %s%s", colorGreen, frame, colorReset, message)
+				fmt.Fprintf(w, "\r%s%s %s%s", color(colorGreen), frame, color(colorReset), message)
 				if f, ok := w.(interface{ Flush() error }); ok {
 					_ = f.Flush()
 				}

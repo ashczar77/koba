@@ -15,15 +15,19 @@ import (
 )
 
 // BuildAgentSystemPrompt returns the unified system prompt for the single agentic flow.
-func BuildAgentSystemPrompt(cwd, repoRoot string) string {
+func BuildAgentSystemPrompt(cwd, repoRoot, customPrompt string) string {
 	if repoRoot == "" {
 		repoRoot = cwd
 	}
-	return "You are Koba, a coding companion in the user's terminal. Do what the user asks, then stop.\n\n" +
+	base := "You are Koba, a coding companion in the user's terminal. Do what the user asks, then stop.\n\n" +
 		"You have tools: read_file, run, grep, write_file. Use them when needed. When you see tool results, reply with one short summary and no further tool calls—that signals you are done.\n\n" +
 		"For code edits (suggesting changes to existing files), output a ```diff ... ``` block in your response; Koba will ask the user to apply it.\n\n" +
 		"Working directory: " + cwd + "\n" +
 		"Repo root: " + repoRoot
+	if customPrompt != "" {
+		base += "\n\nProject instructions: " + customPrompt
+	}
+	return base
 }
 
 // RunAgent runs the agentic loop with structured tool calling. Messages must contain system prompt and end with the latest user message.
@@ -56,6 +60,7 @@ func RunAgent(
 	opts := provider.ChatOptions{
 		Model:       modelOverride,
 		Temperature: cfg.Temperature,
+		MaxTokens:   cfg.MaxTokens,
 		Stream:      true,
 		Tools:       tools,
 	}

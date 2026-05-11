@@ -64,6 +64,7 @@ type anthropicRequest struct {
 	Model       string               `json:"model"`
 	MaxTokens   int                  `json:"max_tokens"`
 	Temperature float32              `json:"temperature,omitempty"`
+	System      string               `json:"system,omitempty"`
 	Messages    []anthropicMessage   `json:"messages"`
 	Tools       []anthropicToolDef   `json:"tools,omitempty"`
 	Stream      bool                 `json:"stream"`
@@ -107,13 +108,12 @@ func (c *AnthropicClient) Chat(ctx context.Context, messages []Message, opts Cha
 }
 
 func (c *AnthropicClient) buildRequestBody(messages []Message, opts ChatOptions) ([]byte, error) {
+	var systemParts []string
 	var am []anthropicMessage
 	for _, m := range messages {
-		role := string(m.Role)
-		if role == "" {
-			role = "user"
-		}
 		switch m.Role {
+		case RoleSystem:
+			systemParts = append(systemParts, m.Content)
 		case RoleTool:
 			am = append(am, anthropicMessage{
 				Role: "user",
@@ -141,6 +141,10 @@ func (c *AnthropicClient) buildRequestBody(messages []Message, opts ChatOptions)
 			}
 			am = append(am, anthropicMessage{Role: "assistant", Content: blocks})
 		default:
+			role := string(m.Role)
+			if role == "" {
+				role = "user"
+			}
 			am = append(am, anthropicMessage{
 				Role: role,
 				Content: []anthropicContentBlock{{Type: "text", Text: m.Content}},
@@ -158,10 +162,16 @@ func (c *AnthropicClient) buildRequestBody(messages []Message, opts ChatOptions)
 		model = c.model
 	}
 
+	maxTokens := opts.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
+
 	req := anthropicRequest{
 		Model:       model,
-		MaxTokens:   2048,
+		MaxTokens:   maxTokens,
 		Temperature: temp,
+		System:      strings.Join(systemParts, "\n\n"),
 		Messages:    am,
 		Stream:      len(opts.Tools) == 0,
 	}

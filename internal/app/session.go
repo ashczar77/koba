@@ -60,7 +60,7 @@ func RunSession(
 		repoRoot = cwd
 	}
 	messages := []provider.Message{
-		{Role: provider.RoleSystem, Content: BuildAgentSystemPrompt(cwd, repoRoot)},
+		{Role: provider.RoleSystem, Content: BuildAgentSystemPrompt(cwd, repoRoot, cfg.SystemPrompt)},
 	}
 
 	scanner := bufio.NewScanner(in)

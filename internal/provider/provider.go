@@ -40,6 +40,7 @@ type ToolCall struct {
 // ChatOptions contains optional parameters for a chat call.
 type ChatOptions struct {
 	Temperature float32
+	MaxTokens   int
 	Model       string
 	Stream      bool
 	Tools       []ToolDef `json:"tools,omitempty"` // when set, model can return tool_calls

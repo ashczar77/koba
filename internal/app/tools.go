@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -12,8 +11,6 @@ import (
 	"strings"
 
 	"koba/internal/config"
-	"koba/internal/contextx"
-	"koba/internal/errors"
 	"koba/internal/provider"
 	"koba/internal/term"
 )
@@ -173,24 +170,31 @@ func executeTool(cwd string, call ToolCall) (string, error) {
 		if path == "" {
 			return "", fmt.Errorf("missing path")
 		}
-		full := filepath.Join(cwd, path)
+		full, err := safePath(cwd, path)
+		if err != nil {
+			return "", err
+		}
 		data, err := os.ReadFile(full)
 		if err != nil {
 			return "", err
 		}
-		return string(data), nil
+		return truncateOutput(string(data)), nil
 	case "run", "exec":
 		cmdStr := call.Args["cmd"]
 		if cmdStr == "" {
 			return "", fmt.Errorf("missing cmd")
 		}
+		if !confirmRun(cmdStr) {
+			return "(command declined by user)", nil
+		}
 		cmd := exec.Command("sh", "-c", cmdStr)
 		cmd.Dir = cwd
 		out, err := cmd.CombinedOutput()
+		result := truncateOutput(string(out))
 		if err != nil {
-			return string(out) + "\nError: " + err.Error(), nil
+			return result + "\nError: " + err.Error(), nil
 		}
-		return string(out), nil
+		return result, nil
 	case "grep":
 		pattern := call.Args["pattern"]
 		path := call.Args["path"]
@@ -200,22 +204,29 @@ func executeTool(cwd string, call ToolCall) (string, error) {
 		if path == "" {
 			path = "."
 		}
-		cmd := exec.Command("grep", "-rn", pattern, path)
+		searchDir, err := safePath(cwd, path)
+		if err != nil {
+			return "", err
+		}
+		cmd := exec.Command("grep", "-rn", pattern, searchDir)
 		cmd.Dir = cwd
 		out, err := cmd.CombinedOutput()
 		if err != nil && len(out) == 0 {
 			return "(no matches)", nil
 		}
-		return string(out), nil
+		return truncateOutput(string(out)), nil
 	case "write_file", "write":
 		path := call.Args["path"]
 		if path == "" {
 			return "", fmt.Errorf("missing path")
 		}
+		full, err := safePath(cwd, path)
+		if err != nil {
+			return "", err
+		}
 		if call.Content == "" {
 			return "", fmt.Errorf("write_file requires a fenced block with content after the TOOL line")
 		}
-		full := filepath.Join(cwd, path)
 		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
 			return "", err
 		}
@@ -234,7 +245,7 @@ func executeTool(cwd string, call ToolCall) (string, error) {
 		if err != nil && len(out) == 0 {
 			return "(no diff or not a git repo)", nil
 		}
-		return string(out), nil
+		return truncateOutput(string(out)), nil
 	case "apply":
 		return "Apply is not a tool. To suggest changes, output a ```diff ... ``` block in your response; Koba will then ask the user to apply it. Do not output more TOOL lines for apply.", nil
 	default:
@@ -242,8 +253,44 @@ func executeTool(cwd string, call ToolCall) (string, error) {
 	}
 }
 
-// RunRun executes an agentic loop with tool use. The model can output
-// TOOL: read_file path, TOOL: run cmd, TOOL: grep pattern path.
+// safePath resolves path relative to root and ensures it doesn't escape.
+func safePath(root, path string) (string, error) {
+	full := filepath.Join(root, path)
+	abs, err := filepath.Abs(full)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+	absRoot, _ := filepath.Abs(root)
+	if !strings.HasPrefix(abs, absRoot+string(filepath.Separator)) && abs != absRoot {
+		return "", fmt.Errorf("path %q escapes project root", path)
+	}
+	return abs, nil
+}
+
+const maxToolOutput = 32 * 1024 // 32KB
+
+// truncateOutput limits tool output to maxToolOutput bytes.
+func truncateOutput(s string) string {
+	if len(s) <= maxToolOutput {
+		return s
+	}
+	return s[:maxToolOutput] + "\n... (output truncated at 32KB)"
+}
+
+// confirmRun prompts the user before executing a shell command.
+func confirmRun(cmd string) bool {
+	fmt.Fprintf(os.Stderr, "\n%s⚠ Run command:%s %s\n", term.ColorYellow(), term.ColorReset(), cmd)
+	fmt.Fprintf(os.Stderr, "Allow? [y/N] ")
+	var input [64]byte
+	n, err := os.Stdin.Read(input[:])
+	if err != nil || n == 0 {
+		return false
+	}
+	answer := strings.TrimSpace(strings.ToLower(string(input[:n])))
+	return answer == "y" || answer == "yes"
+}
+
+// RunRun is the CLI entrypoint for `koba run`. It delegates to RunDo (structured tool calling).
 func RunRun(
 	ctx context.Context,
 	cfg config.Config,
@@ -252,18 +299,6 @@ func RunRun(
 	args []string,
 	modelOverride string,
 ) error {
-	client, err := newProviderClient(cfg, modelOverride)
-	if err != nil {
-		fmt.Fprintln(errOut, errors.FriendlyProvider(err))
-		return err
-	}
-
-	cwd, _ := os.Getwd()
-	repoRoot, _ := contextx.FindRepoRoot(".")
-	if repoRoot == "" {
-		repoRoot = cwd
-	}
-
 	request := strings.TrimSpace(strings.Join(args, " "))
 	if request == "" {
 		data, err := io.ReadAll(in)
@@ -275,115 +310,5 @@ func RunRun(
 	if request == "" {
 		return fmt.Errorf("no request provided")
 	}
-
-	toolPrompt := "You are Koba, an agentic coding assistant. You can use tools by outputting lines like:\n" +
-		"TOOL: read_file path/to/file\n" +
-		"TOOL: run <shell command>\n" +
-		"TOOL: grep \"pattern\" path\n" +
-		"TOOL: write_file path/to/file\n" +
-		"(Then add a fenced block with the file content: ``` ... ```)\n\n" +
-		"You can also output a unified diff in a ```diff ... ``` block to apply code changes. If you do, Koba will offer to apply it. After a failed build or test, output a ```diff block to fix errors and Koba can apply it.\n" +
-		"Output one TOOL line at a time. After each tool result, you can use more tools or give your final answer.\n" +
-		"Working directory: " + cwd + "\n" +
-		"Repo root: " + repoRoot
-
-	var messages []provider.Message
-	messages = append(messages, provider.Message{Role: provider.RoleSystem, Content: toolPrompt})
-	messages = append(messages, provider.Message{Role: provider.RoleUser, Content: request})
-
-	w := bufio.NewWriter(out)
-	defer w.Flush()
-
-	maxTurns := 10
-	for turn := 0; turn < maxTurns; turn++ {
-		stopSpinner := term.StartSpinner(errOut, "Koba is thinking...")
-		streamObj, err := client.Chat(ctx, messages, provider.ChatOptions{
-			Model:       modelOverride,
-			Temperature: cfg.Temperature,
-			Stream:      true,
-		})
-		if err != nil {
-			stopSpinner()
-			return err
-		}
-
-		var resp strings.Builder
-		prefixPrinted := false
-		for {
-			chunk, err := streamObj.Recv(ctx)
-			if err != nil {
-				if err != io.EOF {
-					stopSpinner()
-					fmt.Fprintln(errOut, "stream error:", err)
-				}
-				break
-			}
-			resp.WriteString(chunk.Text)
-			if chunk.Text != "" {
-				stopSpinner()
-				if !prefixPrinted {
-					fmt.Fprint(w, term.AssistantPrefix())
-					prefixPrinted = true
-				}
-				fmt.Fprint(w, chunk.Text)
-				w.Flush()
-			}
-			if chunk.Done {
-				break
-			}
-		}
-		stopSpinner()
-		streamObj.Close()
-		if prefixPrinted {
-			fmt.Fprintln(w)
-		}
-
-		respStr := resp.String()
-
-		// If the model output a ```diff block, offer to apply it (apply-from-run).
-		if blocks := extractDiffBlocks(respStr); len(blocks) > 0 {
-			diffContent := strings.Join(blocks, "\n\n")
-			fmt.Fprint(out, "\nApply this diff? [y/N] ")
-			w.Flush()
-			scanner := bufio.NewScanner(in)
-			if scanner.Scan() {
-				answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
-				if answer == "y" || answer == "yes" {
-					if err := applyPatch(repoRoot, diffContent, out, errOut); err != nil {
-						fmt.Fprintln(errOut, "Patch failed:", err)
-					} else {
-						fmt.Fprintln(out, "Diff applied successfully.")
-					}
-				}
-			}
-			// After applying (or declining), continue; model might output tool calls too.
-		}
-
-		calls := parseToolCalls(respStr)
-		for i := range calls {
-			if calls[i].Name == "write_file" || calls[i].Name == "write" {
-				calls[i].Content = parseWriteFileContent(respStr, calls[i])
-			}
-		}
-		if len(calls) == 0 {
-			break
-		}
-
-		messages = append(messages, provider.Message{Role: provider.RoleAssistant, Content: respStr})
-
-		for _, call := range calls {
-			result, err := executeTool(repoRoot, call)
-			if err != nil {
-				result = "Error: " + err.Error()
-			}
-			fmt.Fprintf(w, "%s[Tool %s] %s\n%s\n", term.AssistantPrefix(), call.Name, call.Raw, result)
-			w.Flush()
-			messages = append(messages, provider.Message{
-				Role:    provider.RoleUser,
-				Content: fmt.Sprintf("Tool result for %s:\n%s", call.Raw, result),
-			})
-		}
-	}
-
-	return nil
+	return RunDo(ctx, cfg, in, out, errOut, request, modelOverride, nil)
 }

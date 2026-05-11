@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,7 +14,8 @@ type ProjectConfig struct {
 	DefaultProvider string  `yaml:"default_provider"`
 	DefaultModel    string  `yaml:"default_model"`
 	Temperature     float32 `yaml:"temperature"`
-	SystemPrompt   string  `yaml:"system_prompt"`
+	MaxTokens       int     `yaml:"max_tokens"`
+	SystemPrompt    string  `yaml:"system_prompt"`
 }
 
 // Config holds user-configurable settings for koba.
@@ -26,6 +28,12 @@ type Config struct {
 
 	// Temperature controls sampling randomness.
 	Temperature float32 `yaml:"temperature"`
+
+	// MaxTokens is the maximum number of tokens in the response.
+	MaxTokens int `yaml:"max_tokens"`
+
+	// SystemPrompt is a custom system prompt (from project config).
+	SystemPrompt string `yaml:"system_prompt"`
 
 	// AnthropicAPIKey is optionally read from config; environment takes precedence.
 	AnthropicAPIKey string `yaml:"anthropic_api_key"`
@@ -108,8 +116,17 @@ func LoadForDir(dir string) (Config, error) {
 		if proj.DefaultModel != "" {
 			cfg.DefaultModel = proj.DefaultModel
 		}
-		if proj.Temperature != 0 {
+		// Use a raw map to distinguish "temperature: 0" from absent.
+		var raw map[string]interface{}
+		_ = yaml.Unmarshal(pdata, &raw)
+		if _, ok := raw["temperature"]; ok {
 			cfg.Temperature = proj.Temperature
+		}
+		if proj.MaxTokens > 0 {
+			cfg.MaxTokens = proj.MaxTokens
+		}
+		if proj.SystemPrompt != "" {
+			cfg.SystemPrompt = proj.SystemPrompt
 		}
 		cfg.ProjectRoot = d
 		break
@@ -120,7 +137,11 @@ func LoadForDir(dir string) (Config, error) {
 		cfg.AnthropicAPIKey = v
 	}
 	if v := os.Getenv("OLLAMA_HOST"); v != "" {
-		cfg.OllamaBaseURL = "http://" + v
+		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+			cfg.OllamaBaseURL = v
+		} else {
+			cfg.OllamaBaseURL = "http://" + v
+		}
 	}
 
 	return cfg, nil

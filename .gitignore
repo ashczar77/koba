@@ -2,6 +2,8 @@
 /bin/
 /dist/
 /build/
+/koba
+/agent
 
 # Go modules & tooling
 /vendor/

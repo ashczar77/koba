@@ -34,7 +34,7 @@ func RunDo(
 	if repoRoot == "" {
 		repoRoot = cwd
 	}
-	systemPrompt := BuildAgentSystemPrompt(cwd, repoRoot)
+	systemPrompt := BuildAgentSystemPrompt(cwd, repoRoot, cfg.SystemPrompt)
 
 	if messages == nil {
 		// One-shot: start a new conversation.
