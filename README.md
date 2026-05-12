@@ -1,111 +1,132 @@
-## koba
+# koba
 
-`koba` is a Go-based terminal coding agent CLI, inspired by tools like Claude Code, Gemini CLI, Kiro CLI, and Augment CLI.
+A coding agent in your terminal. Talk to it, and it writes code, edits files, runs commands, and searches your codebase.
 
-It runs in your terminal, talks to Anthropic Claude (Haiku by default), and is designed so you can plug in other providers later.
+Built with Go. Works with Anthropic Claude or locally with Ollama (no API key needed).
 
-The goal is simple: **give you a smart coding assistant directly in your shell**, with good repo context and a clean, minimal UX.
+## Installation
 
----
+### Download binary (recommended)
 
-### Features
+Download the latest release for your platform from [Releases](https://github.com/ashczar77/koba/releases).
 
-- **Interactive conversation** – just run `koba` and start talking.
-- **One-shot requests** – `koba "fix the bug in main.go"` and done.
-- **Agentic tool use** – reads files, runs commands, greps, writes files.
-- **Diff-based edits** – proposes diffs and applies them with your confirmation.
-- **Repo-aware** – picks up git diff, README, go.mod, and shell history as context.
-- **Local-first** – Ollama provider for fully offline use; no API keys required.
-- **Project-scoped config** – `.koba/config.yaml` in repo root overrides global settings.
+```bash
+# macOS / Linux
+chmod +x koba
+sudo mv koba /usr/local/bin/
+```
 
----
+### Build from source
 
-### Installation
+Requires Go 1.21+:
 
 ```bash
 go install ./cmd/koba
 ```
 
-Make sure `$GOBIN` (usually `$HOME/go/bin`) is on your `PATH`.
-
----
-
-### Configuration
-
-1. **Set your Anthropic API key** (optional if using Ollama or mock):
+## Quick start
 
 ```bash
+# Local mode (no API key)
+export KOBA_PROVIDER=ollama
+koba
+
+# Or with Anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
+koba
 ```
 
-2. **Optional config file** at `~/.agent/config.yaml`:
+## Usage
 
-```yaml
-default_provider: anthropic   # or "ollama", "mock"
-default_model: claude-3-haiku-20240307
-temperature: 0.2
+```bash
+koba                              # Start a conversation
+koba "fix the bug in main.go"     # One-shot request
+koba doctor                       # Check provider status
+koba history                      # List past sessions
 ```
 
-3. **Ollama (local, no API key)**:
+In a session, just type naturally. Koba can read files, run commands, search code, propose diffs, and apply them with your confirmation.
+
+## Using Koba with Ollama
+
+Ollama lets you run models locally — no API key, no internet, fully private.
+
+### 1. Install Ollama
+
+```bash
+# macOS
+brew install ollama
+
+# Linux
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+Or download from [ollama.com](https://ollama.com).
+
+### 2. Start the Ollama server
+
+```bash
+ollama serve
+```
+
+Leave this running in the background (or it runs automatically on macOS after install).
+
+### 3. Pull a model
+
+```bash
+ollama pull qwen3:1.7b
+```
+
+This is a small, fast model that supports tool use. For better quality (but slower, more resource-heavy):
+
+```bash
+ollama pull qwen3
+```
+
+### 4. Run Koba
 
 ```bash
 export KOBA_PROVIDER=ollama
+koba
 ```
 
-Ensure [Ollama](https://ollama.ai) is running. Default model: `llama3.2`.
+That's it. Koba will connect to your local Ollama and start chatting.
 
-4. **Project-scoped config** – create `.koba/config.yaml` in your repo root:
+## Configuration
+
+Global config at `~/.agent/config.yaml`:
 
 ```yaml
-default_provider: ollama
+default_provider: ollama    # or "anthropic"
+default_model: qwen3:1.7b
+temperature: 0.2
+```
+
+Project config at `.koba/config.yaml` (overrides global):
+
+```yaml
 default_model: codellama
 system_prompt: "You are helping with this specific codebase."
 ```
 
----
+Environment variables override everything:
 
-### Usage
+| Variable | Purpose |
+|----------|---------|
+| `KOBA_PROVIDER` | Provider (`anthropic`, `ollama`) |
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `OLLAMA_HOST` | Ollama server address |
 
-#### Interactive session
+## Features
 
-```bash
-koba
-```
+- Interactive conversation with readline (arrow keys, history)
+- One-shot requests for quick tasks
+- Agentic tool use: `read_file`, `write_file`, `run`, `grep`
+- Diff-based edits with confirmation before applying
+- Repo-aware context (git diff, project files)
+- Streamed responses with markdown rendering
+- Works fully offline with Ollama
 
-Start a conversation. Everything you type is handled by Koba – it can review diffs, edit files, search code, answer questions, and run commands. Just talk to it.
+## License
 
-#### One-shot request
-
-```bash
-koba "refactor the auth handler"
-koba "review my diff"
-koba "add error handling to main.go"
-koba "find all usages of Foo"
-koba "explain how this function works"
-```
-
-Koba handles the request, uses tools as needed, and exits.
-
-#### Utility commands
-
-```bash
-koba doctor              # Provider diagnostics
-koba history             # List past sessions
-koba history 3           # Show session #3
-```
-
----
-
-### How it works
-
-- **Single agentic flow** – every request goes through the same agent loop with tool access (read_file, run, grep, write_file).
-- **Config & env**: `internal/config` loads `~/.agent/config.yaml`, then merges project `.koba/config.yaml`. Env vars override.
-- **Providers**: Anthropic, Ollama (local), and mock. Select via `default_provider` or `KOBA_PROVIDER`.
-- **Repo context**: `internal/contextx` gathers git diff, README, go.mod, and recent shell history.
-- **Diff apply**: Parses fenced diff blocks from model output and applies with `patch`.
-
----
-
-### License
-
-MIT. See `LICENSE` for details.
+MIT
