@@ -31,7 +31,7 @@ func NewOllamaClient(baseURL, model string) (*OllamaClient, error) {
 	}
 	return &OllamaClient{
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: 5 * time.Minute,
 		},
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		model:   model,
@@ -96,7 +96,7 @@ func (c *OllamaClient) Chat(ctx context.Context, messages []Message, opts ChatOp
 	reqBody := ollamaRequest{
 		Model:    model,
 		Messages: om,
-		Stream:   len(opts.Tools) == 0,
+		Stream:   true,
 	}
 	if opts.Temperature > 0 {
 		reqBody.Options = map[string]any{"temperature": opts.Temperature}
@@ -127,9 +127,6 @@ func (c *OllamaClient) Chat(ctx context.Context, messages []Message, opts ChatOp
 		return nil, fmt.Errorf("ollama API error: %s: %s", resp.Status, string(b))
 	}
 
-	if len(opts.Tools) > 0 {
-		return c.readNonStreamResponse(resp)
-	}
 	return &ollamaStream{body: bufio.NewReader(resp.Body), resp: resp}, nil
 }
 
@@ -184,64 +181,14 @@ func (c *OllamaClient) convertTools(tools []ToolDef) []ollamaToolDef {
 	return out
 }
 
-// ollamaToolResponse is the full message in a non-streaming response.
-type ollamaToolResponse struct {
-	Message struct {
-		Content   string          `json:"content"`
-		ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
-	} `json:"message"`
-}
 
-func (c *OllamaClient) readNonStreamResponse(resp *http.Response) (Stream, error) {
-	defer resp.Body.Close()
-	var full ollamaToolResponse
-	if err := json.NewDecoder(resp.Body).Decode(&full); err != nil {
-		return nil, fmt.Errorf("ollama response decode: %w", err)
-	}
-	var toolCalls []ToolCall
-	for _, oc := range full.Message.ToolCalls {
-		args := oc.Function.Arguments
-		if args == nil {
-			args = make(map[string]interface{})
-		}
-		toolCalls = append(toolCalls, ToolCall{
-			ID:        fmt.Sprintf("%d", oc.Function.Index),
-			Name:      oc.Function.Name,
-			Arguments: args,
-		})
-	}
-	return &ollamaToolStream{content: full.Message.Content, toolCalls: toolCalls, done: false}, nil
-}
-
-// ollamaToolStream yields content once then Done; ToolCalls() returns the parsed tool calls.
-type ollamaToolStream struct {
-	content   string
-	toolCalls []ToolCall
-	done      bool
-}
-
-func (s *ollamaToolStream) Recv(ctx context.Context) (StreamChunk, error) {
-	if s.done {
-		return StreamChunk{Done: true}, io.EOF
-	}
-	s.done = true
-	return StreamChunk{Text: s.content, Done: true}, io.EOF
-}
-
-func (s *ollamaToolStream) Close() error {
-	s.done = true
-	return nil
-}
-
-func (s *ollamaToolStream) ToolCalls() []ToolCall {
-	return s.toolCalls
-}
 
 // ollamaStream reads NDJSON from the response and yields content deltas.
 type ollamaStream struct {
-	body *bufio.Reader
-	resp *http.Response
-	done bool
+	body      *bufio.Reader
+	resp      *http.Response
+	done      bool
+	toolCalls []ToolCall
 }
 
 func (s *ollamaStream) Recv(ctx context.Context) (StreamChunk, error) {
@@ -264,9 +211,23 @@ func (s *ollamaStream) Recv(ctx context.Context) (StreamChunk, error) {
 	if err := json.Unmarshal(line, &chunk); err != nil {
 		return StreamChunk{}, err
 	}
+	// Collect tool calls from the chunk.
+	if len(chunk.Message.ToolCalls) > 0 {
+		for i, oc := range chunk.Message.ToolCalls {
+			args := oc.Function.Arguments
+			if args == nil {
+				args = make(map[string]interface{})
+			}
+			s.toolCalls = append(s.toolCalls, ToolCall{
+				ID:        fmt.Sprintf("%d", i),
+				Name:      oc.Function.Name,
+				Arguments: args,
+			})
+		}
+	}
 	if chunk.Done {
 		s.done = true
-		return StreamChunk{Text: chunk.Message.Content, Done: true}, io.EOF
+		return StreamChunk{Text: chunk.Message.Content, Done: true}, nil
 	}
 	return StreamChunk{Text: chunk.Message.Content, Done: false}, nil
 }
@@ -280,5 +241,5 @@ func (s *ollamaStream) Close() error {
 }
 
 func (s *ollamaStream) ToolCalls() []ToolCall {
-	return nil
+	return s.toolCalls
 }

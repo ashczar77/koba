@@ -1,12 +1,16 @@
 package app
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
+
+	"github.com/chzyer/readline"
 
 	"koba/internal/config"
 	"koba/internal/contextx"
@@ -14,9 +18,7 @@ import (
 	"koba/internal/term"
 )
 
-// RunSession starts an interactive session: everything the user types is
-// routed and handled (review, apply, ask, code, run). Like Kiro/Gemini CLI.
-// Each session is logged under ~/.koba/sessions/<timestamp>.log for koba history.
+// RunSession starts an interactive session with readline support and Ctrl+C handling.
 func RunSession(
 	ctx context.Context,
 	cfg config.Config,
@@ -34,7 +36,7 @@ func RunSession(
 	}
 	banner := term.Banner(strings.ToUpper(providerName), modelForDisplay(providerName, cfg, modelOverride), mode)
 
-	// Optional session log: tee response output so we can list/replay later.
+	// Session log.
 	var sessionFile *os.File
 	var combinedOut io.Writer = out
 	if _, err := EnsureSessionsDir(); err == nil {
@@ -47,11 +49,6 @@ func RunSession(
 		}
 	}
 
-	w := bufio.NewWriter(out)
-	combined := bufio.NewWriter(combinedOut)
-	defer w.Flush()
-	defer combined.Flush()
-
 	fmt.Fprint(out, banner)
 
 	cwd, _ := os.Getwd()
@@ -63,17 +60,57 @@ func RunSession(
 		{Role: provider.RoleSystem, Content: BuildAgentSystemPrompt(cwd, repoRoot, cfg.SystemPrompt)},
 	}
 
-	scanner := bufio.NewScanner(in)
-	var lastUser string
-	var lastErr error
-	for {
-		fmt.Fprint(w, term.UserPrefix())
-		w.Flush()
+	// Setup readline.
+	historyFile := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		dir := home + "/.koba"
+		_ = os.MkdirAll(dir, 0755)
+		historyFile = dir + "/history"
+	}
 
-		if !scanner.Scan() {
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          term.UserPrefix(),
+		HistoryFile:     historyFile,
+		InterruptPrompt: fmt.Sprintf("\n  %sPress Ctrl+C again to exit.%s\n  %sPress Ctrl+D to close Koba.%s", term.ColorDim(), term.ColorReset(), term.ColorDim(), term.ColorReset()),
+		EOFPrompt:       "",
+	})
+	if err != nil {
+		return fmt.Errorf("readline init: %w", err)
+	}
+	defer rl.Close()
+
+	// Ctrl+C handling: first press shows warning, second within 2s exits.
+	var lastInterrupt time.Time
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT)
+	defer signal.Stop(sigCh)
+
+	go func() {
+		for range sigCh {
+			now := time.Now()
+			if now.Sub(lastInterrupt) < 2*time.Second {
+				fmt.Fprint(out, term.ExitMessage())
+				os.Exit(0)
+			}
+			lastInterrupt = now
+			// The readline InterruptPrompt handles the display.
+		}
+	}()
+
+	var lastErr error
+	var lastUser string
+	for {
+		rl.SetPrompt(term.UserPrefix())
+		line, err := rl.Readline()
+		if err != nil {
+			if err == readline.ErrInterrupt {
+				lastInterrupt = time.Now()
+				continue
+			}
+			// EOF (Ctrl+D)
 			break
 		}
-		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
@@ -89,19 +126,13 @@ func RunSession(
 		lastUser = line
 		lastErr = nil
 
-		if err := RunDo(ctx, cfg, in, combined, errOut, request, modelOverride, &messages); err != nil {
+		if err := RunDo(ctx, cfg, in, combinedOut, errOut, request, modelOverride, &messages); err != nil {
 			lastErr = err
 			fmt.Fprintln(errOut, err)
 		}
-		fmt.Fprintln(combined)
-		combined.Flush()
+		fmt.Fprintln(combinedOut)
 	}
 
 	fmt.Fprint(out, term.ExitMessage())
-
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		fmt.Fprintln(errOut, "input error:", err)
-	}
 	return nil
 }
-

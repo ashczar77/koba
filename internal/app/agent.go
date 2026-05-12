@@ -75,7 +75,6 @@ func RunAgent(
 		}
 
 		var resp strings.Builder
-		prefixPrinted := false
 		for {
 			chunk, err := streamObj.Recv(ctx)
 			if err != nil {
@@ -85,16 +84,10 @@ func RunAgent(
 				}
 				break
 			}
-			resp.WriteString(chunk.Text)
 			if chunk.Text != "" {
 				stopSpinner()
-				if !prefixPrinted {
-					fmt.Fprint(w, term.AssistantPrefix())
-					prefixPrinted = true
-				}
-				fmt.Fprint(w, chunk.Text)
-				w.Flush()
 			}
+			resp.WriteString(chunk.Text)
 			if chunk.Done {
 				break
 			}
@@ -102,11 +95,15 @@ func RunAgent(
 		stopSpinner()
 		toolCalls := streamObj.ToolCalls()
 		streamObj.Close()
-		if prefixPrinted {
-			fmt.Fprintln(w)
-		}
 
 		respStr := resp.String()
+		if strings.TrimSpace(respStr) != "" {
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, term.AssistantPrefix())
+			fmt.Fprint(w, term.FormatResponse(respStr))
+			w.Flush()
+		}
+
 		assistantMsg := provider.Message{Role: provider.RoleAssistant, Content: respStr}
 		if len(toolCalls) > 0 {
 			assistantMsg.OptionalToolCalls = toolCalls

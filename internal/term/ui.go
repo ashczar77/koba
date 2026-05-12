@@ -199,12 +199,14 @@ func FormatResponse(text string) string {
 		}
 		// Lists
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
-			sb.WriteString("  • " + trimmed[2:] + "\n")
+			content := renderInlineCode(renderInlineBold(trimmed[2:]))
+			sb.WriteString("  • " + content + "\n")
 			continue
 		}
 		// Numbered lists (keep as-is but indent)
 		if len(trimmed) > 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && strings.Contains(trimmed[:3], ".") {
-			sb.WriteString("  " + trimmed + "\n")
+			content := renderInlineCode(renderInlineBold(trimmed))
+			sb.WriteString("  " + content + "\n")
 			continue
 		}
 		// Inline bold **text**
