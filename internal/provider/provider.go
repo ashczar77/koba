@@ -50,7 +50,14 @@ type ChatOptions struct {
 type StreamChunk struct {
 	Text      string     `json:"text"`
 	Done      bool       `json:"done"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // set when stream delivers tool calls (e.g. at end)
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Usage     *Usage     `json:"usage,omitempty"`
+}
+
+// Usage tracks token counts for a response.
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
 }
 
 // Stream is a pull-based streaming interface.

@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 )
 
 // ANSI color codes.
@@ -152,6 +155,7 @@ func FormatReview(text string) string {
 // FormatResponse renders markdown-like formatting: headers, bold, code blocks, lists.
 func FormatResponse(text string) string {
 	const codeFence = "```"
+	width := termWidth()
 	var sb strings.Builder
 	lines := strings.Split(text, "\n")
 	inBlock := false
@@ -199,21 +203,18 @@ func FormatResponse(text string) string {
 		}
 		// Lists
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
-			content := renderInlineCode(renderInlineBold(trimmed[2:]))
-			sb.WriteString("  • " + content + "\n")
+			content := "  • " + trimmed[2:]
+			sb.WriteString(wordWrap(content, width) + "\n")
 			continue
 		}
 		// Numbered lists (keep as-is but indent)
 		if len(trimmed) > 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && strings.Contains(trimmed[:3], ".") {
-			content := renderInlineCode(renderInlineBold(trimmed))
-			sb.WriteString("  " + content + "\n")
+			content := "  " + trimmed
+			sb.WriteString(wordWrap(content, width) + "\n")
 			continue
 		}
-		// Inline bold **text**
-		rendered := renderInlineBold(line)
-		// Inline code `text`
-		rendered = renderInlineCode(rendered)
-		sb.WriteString(rendered + "\n")
+		// Regular text with inline formatting
+		sb.WriteString(wordWrap(line, width) + "\n")
 	}
 	flushBlock()
 	return strings.TrimRight(sb.String(), "\n") + "\n"
@@ -228,6 +229,97 @@ func renderInlineBold(s string) string {
 
 func renderInlineCode(s string) string {
 	return inlineCodeRe.ReplaceAllString(s, color(colorCyan)+"$1"+color(colorReset))
+}
+
+// termWidth returns the terminal width, defaulting to 80.
+func termWidth() int {
+	if w := os.Getenv("COLUMNS"); w != "" {
+		if n, err := strconv.Atoi(w); err == nil && n > 0 {
+			return n
+		}
+	}
+	// Try ioctl
+	if f, err := os.Open("/dev/tty"); err == nil {
+		defer f.Close()
+		if ws, err := getWinSize(f); err == nil && ws > 0 {
+			return ws
+		}
+	}
+	return 80
+}
+
+type winsize struct {
+	Row    uint16
+	Col    uint16
+	Xpixel uint16
+	Ypixel uint16
+}
+
+func getWinSize(f *os.File) (int, error) {
+	var ws winsize
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws)))
+	if errno != 0 {
+		return 0, errno
+	}
+	return int(ws.Col), nil
+}
+
+// wordWrap wraps text to fit within maxWidth, keeping words whole.
+// It preserves leading indent.
+func wordWrap(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		maxWidth = 80
+	}
+	// Strip ANSI to measure visible length, but we wrap the original.
+	visible := ansiStrip.ReplaceAllString(s, "")
+	if len(visible) <= maxWidth {
+		return s
+	}
+
+	// Determine leading indent from original visible text.
+	indent := ""
+	for _, r := range visible {
+		if r == ' ' || r == '\t' {
+			indent += string(r)
+		} else {
+			break
+		}
+	}
+	// For continuation lines, add 2 extra spaces.
+	contIndent := indent + "  "
+	if len(contIndent) >= maxWidth/2 {
+		contIndent = indent
+	}
+
+	words := strings.Fields(visible)
+	if len(words) == 0 {
+		return s
+	}
+
+	var lines []string
+	line := indent + words[0]
+	lineLen := len(indent) + len(words[0])
+
+	for _, w := range words[1:] {
+		if lineLen+1+len(w) > maxWidth {
+			lines = append(lines, line)
+			line = contIndent + w
+			lineLen = len(contIndent) + len(w)
+		} else {
+			line += " " + w
+			lineLen += 1 + len(w)
+		}
+	}
+	lines = append(lines, line)
+
+	// Re-apply inline formatting to each wrapped line.
+	var result []string
+	for _, l := range lines {
+		l = renderInlineBold(l)
+		l = renderInlineCode(l)
+		result = append(result, l)
+	}
+	return strings.Join(result, "\n")
 }
 
 // Spinner frames.

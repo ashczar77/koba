@@ -64,6 +64,19 @@ func AgentToolDefs() []provider.ToolDef {
 				"required": []interface{}{"path", "content"},
 			},
 		},
+		{
+			Name:        "edit_file",
+			Description: "Make a targeted edit to a file by replacing an exact string with new content. Use this instead of write_file when modifying existing files. The old_str must match exactly (including whitespace).",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path":    map[string]interface{}{"type": "string", "description": "Path to the file relative to repo root"},
+					"old_str": map[string]interface{}{"type": "string", "description": "The exact string to find and replace"},
+					"new_str": map[string]interface{}{"type": "string", "description": "The replacement string"},
+				},
+				"required": []interface{}{"path", "old_str", "new_str"},
+			},
+		},
 	}
 }
 
@@ -234,6 +247,37 @@ func executeTool(cwd string, call ToolCall) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("Wrote %d bytes to %s", len(call.Content), path), nil
+	case "edit_file", "edit":
+		path := call.Args["path"]
+		oldStr := call.Args["old_str"]
+		newStr := call.Args["new_str"]
+		if path == "" {
+			return "", fmt.Errorf("missing path")
+		}
+		if oldStr == "" {
+			return "", fmt.Errorf("missing old_str")
+		}
+		full, err := safePath(cwd, path)
+		if err != nil {
+			return "", err
+		}
+		data, err := os.ReadFile(full)
+		if err != nil {
+			return "", err
+		}
+		content := string(data)
+		if !strings.Contains(content, oldStr) {
+			return "", fmt.Errorf("old_str not found in %s", path)
+		}
+		count := strings.Count(content, oldStr)
+		if count > 1 {
+			return "", fmt.Errorf("old_str matches %d times in %s; must be unique", count, path)
+		}
+		updated := strings.Replace(content, oldStr, newStr, 1)
+		if err := os.WriteFile(full, []byte(updated), 0644); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Edited %s", path), nil
 	case "diff":
 		path := call.Args["path"]
 		cmd := exec.Command("git", "diff", "--", path)

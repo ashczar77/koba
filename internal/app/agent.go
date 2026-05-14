@@ -20,8 +20,10 @@ func BuildAgentSystemPrompt(cwd, repoRoot, customPrompt string) string {
 		repoRoot = cwd
 	}
 	base := "You are Koba, a coding companion in the user's terminal. Do what the user asks, then stop.\n\n" +
-		"You have tools: read_file, run, grep, write_file. Use them when needed. When you see tool results, reply with one short summary and no further tool calls—that signals you are done.\n\n" +
-		"For code edits (suggesting changes to existing files), output a ```diff ... ``` block in your response; Koba will ask the user to apply it.\n\n" +
+		"You have tools: read_file, edit_file, write_file, run, grep. Use them when needed.\n" +
+		"- Use edit_file for targeted changes to existing files (search and replace).\n" +
+		"- Use write_file only for creating new files.\n" +
+		"- read_file and grep run silently. run will ask the user for confirmation.\n\n" +
 		"Working directory: " + cwd + "\n" +
 		"Repo root: " + repoRoot
 	if customPrompt != "" {
@@ -75,6 +77,7 @@ func RunAgent(
 		}
 
 		var resp strings.Builder
+		var usage *provider.Usage
 		for {
 			chunk, err := streamObj.Recv(ctx)
 			if err != nil {
@@ -88,6 +91,9 @@ func RunAgent(
 				stopSpinner()
 			}
 			resp.WriteString(chunk.Text)
+			if chunk.Usage != nil {
+				usage = chunk.Usage
+			}
 			if chunk.Done {
 				break
 			}
@@ -98,9 +104,11 @@ func RunAgent(
 
 		respStr := resp.String()
 		if strings.TrimSpace(respStr) != "" {
-			fmt.Fprintln(w)
-			fmt.Fprintln(w, term.AssistantPrefix())
+			fmt.Fprintf(w, "\n%s\n", term.AssistantPrefix())
 			fmt.Fprint(w, term.FormatResponse(respStr))
+			if usage != nil {
+				fmt.Fprintf(w, "\n%s  tokens: %d in · %d out%s\n", term.ColorDim(), usage.InputTokens, usage.OutputTokens, term.ColorReset())
+			}
 			w.Flush()
 		}
 
@@ -128,7 +136,7 @@ func RunAgent(
 				result, err := ExecuteProviderTool(repoRoot, call)
 				if err != nil {
 					result = "Error: " + err.Error()
-				} else if call.Name == "write_file" {
+				} else if call.Name == "write_file" || call.Name == "edit_file" {
 					hadSuccessfulWrite = true
 				}
 				*messages = append(*messages, provider.Message{

@@ -71,15 +71,17 @@ func RunSession(
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          term.UserPrefix(),
 		HistoryFile:     historyFile,
-		InterruptPrompt: fmt.Sprintf("\n  %sPress Ctrl+C again to exit.%s\n  %sPress Ctrl+D to close Koba.%s", term.ColorDim(), term.ColorReset(), term.ColorDim(), term.ColorReset()),
+		InterruptPrompt: fmt.Sprintf("\n  %sPress Ctrl+C again to exit. Ctrl+D to close Koba.%s", term.ColorDim(), term.ColorReset()),
 		EOFPrompt:       "",
+		// Enable paste detection so multi-line pastes work as a single input.
+		EnableMask: false,
 	})
 	if err != nil {
 		return fmt.Errorf("readline init: %w", err)
 	}
 	defer rl.Close()
 
-	// Ctrl+C handling: first press shows warning, second within 2s exits.
+	// Ctrl+C handling.
 	var lastInterrupt time.Time
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT)
@@ -93,7 +95,6 @@ func RunSession(
 				os.Exit(0)
 			}
 			lastInterrupt = now
-			// The readline InterruptPrompt handles the display.
 		}
 	}()
 
@@ -110,20 +111,43 @@ func RunSession(
 			// EOF (Ctrl+D)
 			break
 		}
-		line = strings.TrimSpace(line)
-		if line == "" {
+		input := strings.TrimSpace(line)
+		if input == "" {
 			continue
 		}
 
-		if sessionFile != nil {
-			fmt.Fprintf(sessionFile, "%s%s\n", term.UserPrefix(), line)
+		// Slash commands.
+		if strings.HasPrefix(input, "/") {
+			switch strings.ToLower(strings.Fields(input)[0]) {
+			case "/clear":
+				messages = messages[:1]
+				fmt.Fprintf(out, "  %sConversation cleared.%s\n", term.ColorDim(), term.ColorReset())
+				continue
+			case "/exit", "/quit":
+				fmt.Fprint(out, term.ExitMessage())
+				return nil
+			case "/history":
+				_ = RunHistory(out, errOut, 10, -1)
+				continue
+			case "/help":
+				fmt.Fprintf(out, "  %sCommands:%s\n", term.ColorDim(), term.ColorReset())
+				fmt.Fprintf(out, "  /clear    — reset conversation\n")
+				fmt.Fprintf(out, "  /history  — show past sessions\n")
+				fmt.Fprintf(out, "  /exit     — quit koba\n")
+				fmt.Fprintf(out, "  /help     — show this help\n")
+				continue
+			}
 		}
 
-		request := line
-		if lastErr != nil && lastUser != "" {
-			request = "Context: The user's previous message was: \"" + lastUser + "\". Koba returned an error: " + lastErr.Error() + "\n\nCurrent message: " + line
+		if sessionFile != nil {
+			fmt.Fprintf(sessionFile, "%s%s\n", term.UserPrefix(), input)
 		}
-		lastUser = line
+
+		request := input
+		if lastErr != nil && lastUser != "" {
+			request = "Context: The user's previous message was: \"" + lastUser + "\". Koba returned an error: " + lastErr.Error() + "\n\nCurrent message: " + input
+		}
+		lastUser = input
 		lastErr = nil
 
 		if err := RunDo(ctx, cfg, in, combinedOut, errOut, request, modelOverride, &messages); err != nil {
